@@ -20,7 +20,7 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_SSHKEY }} # Подключение по паролю
           source: "."
-          target: "/root/cs2-bot" # Папка на сервере, куда загрузится бот
+          target: "/root/faceitbot" # Папка на сервере, куда загрузится бот
           exclude: ".git,.github"
 
       - name: Restart Docker Compose on VPS
@@ -30,6 +30,6 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_SSHKEY }} # Подключение по паролю
           script: |
-            cd /root/cs2-bot
+            cd /root/faceitbot
             docker-compose up -d --build
             docker image prune -f
