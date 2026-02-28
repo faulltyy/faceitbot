@@ -1,0 +1,35 @@
+name: Deploy Bot to VPS
+
+on:
+  push:
+    branches:
+      - master # Если твоя основная ветка называется master, поменяй на master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Copy project files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_SSHKEY }} # Подключение по паролю
+          source: "."
+          target: "/root/cs2-bot" # Папка на сервере, куда загрузится бот
+          exclude: ".git,.github"
+
+      - name: Restart Docker Compose on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_SSHKEY }} # Подключение по паролю
+          script: |
+            cd /root/cs2-bot
+            docker-compose up -d --build
+            docker image prune -f
