@@ -1,13 +1,16 @@
 # FACEIT CS2 Stats Bot
 
-A Telegram bot that fetches a player's CS2 statistics for their last 20 matches using the FACEIT Data API v4. Fully Dockerized with Redis caching and rate-limit protection.
+A Telegram bot that fetches a player's CS2 statistics using the FACEIT Data API v4. Fully Dockerized with Redis caching and rate-limit protection.
 
 ## Features
 
-- `/stats <nickname>` — look up any FACEIT player's recent CS2 performance
-- **Smart caching** — individual match stats cached for 7 days, summary cached for 15 min
+- `/stats <nickname>` — average stats for the last 20 CS2 matches
+- `/matches <nickname>` — per-match stats for the last 10 matches (one line per match)
+- `/start` / `/help` — welcome message with usage examples
+- **Bot Menu** — commands auto-register on startup so Telegram shows native autocomplete
+- **Smart caching** — individual match stats cached for 7 days, formatted responses cached for 15 min
 - **Rate-limit safe** — exponential backoff on 429 + concurrency semaphore (max 3 parallel requests)
-- **Edge-case handling** — player not found, fewer than 20 matches, no CS2 data
+- **Edge-case handling** — player not found, fewer matches than requested, no CS2 data
 
 ## Quick Start
 
@@ -32,13 +35,9 @@ This starts:
 
 ### 3. Talk to your bot
 
-Open Telegram, find your bot, and send:
+Open Telegram, find your bot, and type `/` to see the command menu.
 
-```
-/stats s1mple
-```
-
-Expected response:
+#### `/stats s1mple`
 
 ```
 📊 CS2 Stats for s1mple
@@ -47,6 +46,15 @@ Expected response:
 💀 Avg K/R: XX.XX
 💥 Avg ADR: XX.XX
 🏆 Winrate for last 20 matches: XX%
+```
+
+#### `/matches s1mple`
+
+```
+🎮 Last 10 Matches for s1mple:
+1. [W] 🎯 K: XX | ⚔️ K/D: X.XX | 💀 K/R: X.XX | 💥 ADR: XX.XX
+2. [L] 🎯 K: XX | ⚔️ K/D: X.XX | 💀 K/R: X.XX | 💥 ADR: XX.XX
+...
 ```
 
 ## Project Structure
@@ -60,7 +68,7 @@ faceitbot/
 │   ├── services/
 │   │   └── stats.py         # Stats aggregation + Redis caching
 │   └── bot/
-│       └── handlers.py      # /stats command handler
+│       └── handlers.py      # /start, /help, /stats, /matches handlers
 ├── main.py                  # Entry point
 ├── requirements.txt
 ├── Dockerfile

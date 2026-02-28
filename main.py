@@ -8,7 +8,7 @@ import logging
 import redis.asyncio as aioredis
 from aiogram import Bot, Dispatcher
 
-from app.bot.handlers import router
+from app.bot.handlers import on_startup, router
 from app.config import REDIS_URL, TELEGRAM_BOT_TOKEN
 
 logging.basicConfig(
@@ -39,6 +39,9 @@ async def main() -> None:
     # Store shared resources as workflow data — handlers receive them as kwargs
     dp["faceit_client"] = faceit_client
     dp["redis"] = redis
+
+    # Register bot commands on startup (shows autocomplete menu in Telegram)
+    dp.startup.register(on_startup)
 
     logger.info("Starting Telegram bot polling …")
     try:
