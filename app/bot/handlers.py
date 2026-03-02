@@ -23,7 +23,7 @@ router = Router(name="faceit_stats")
 
 BOT_COMMANDS = [
     BotCommand(command="stats", description="Average stats for the last 20 CS2 matches"),
-    BotCommand(command="matches", description="Per-match stats for the last 30 CS2 matches"),
+    BotCommand(command="matches", description="Per-match stats: /matches nick [count]"),
     BotCommand(command="help", description="Show help and usage examples"),
 ]
 
@@ -41,11 +41,12 @@ HELP_TEXT = (
     "I can look up any player's recent CS2 statistics from FACEIT.\n\n"
     "<b>Commands:</b>\n"
     "  /stats &lt;nickname&gt; — average stats for the last 20 matches\n"
-    "  /matches &lt;nickname&gt; — individual stats for the last 10 matches\n"
+    "  /matches &lt;nickname&gt; [count] — last N matches (default 20, max 30)\n"
     "  /help — show this message\n\n"
     "<b>Examples:</b>\n"
     "  <code>/stats s1mple</code>\n"
-    "  <code>/matches s1mple</code>\n\n"
+    "  <code>/matches s1mple</code>\n"
+    "  <code>/matches s1mple 10</code>\n\n"
     "💡 Just type <code>/</code> to see the command menu."
 )
 
@@ -102,23 +103,33 @@ async def cmd_stats(message: types.Message, faceit_client, redis) -> None:
 
 @router.message(Command("matches"))
 async def cmd_matches(message: types.Message, faceit_client, redis) -> None:
-    """Handle ``/matches <nickname>``."""
+    """Handle ``/matches <nickname> [count]``."""
 
-    args = message.text.split(maxsplit=1) if message.text else []
-    if len(args) < 2 or not args[1].strip():
+    parts = message.text.split() if message.text else []
+    if len(parts) < 2 or not parts[1].strip():
         await message.answer(
-            "⚠️ Usage: /matches <nickname>\nExample: /matches s1mple"
+            "⚠️ Usage: /matches <nickname> [count]\n"
+            "Example: /matches s1mple 15\n"
+            "Count is optional (1-30, default 20)."
         )
         return
 
-    nickname = args[1].strip()
+    nickname = parts[1].strip()
+
+    # Parse optional count
+    limit = 20
+    if len(parts) >= 3:
+        try:
+            limit = max(1, min(30, int(parts[2])))
+        except ValueError:
+            pass  # ignore bad count, use default
 
     from app.services.stats import get_player_matches_table
 
-    await message.answer(f"🔍 Looking up recent matches for {nickname} …")
+    await message.answer(f"🔍 Looking up last {limit} matches for {nickname} …")
 
     try:
-        result = await get_player_matches_table(nickname, faceit_client, redis)
+        result = await get_player_matches_table(nickname, faceit_client, redis, limit=limit)
         await message.answer(result, parse_mode="HTML")
     except PlayerNotFound:
         await message.answer(f"❌ Player {nickname} not found on FACEIT.")

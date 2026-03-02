@@ -156,6 +156,29 @@ class FaceitClient:
             raise NoMatchesFound("No CS2 matches found for this player")
         return items
 
+    async def get_player_game_stats(
+        self,
+        player_id: str,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Return per-match stats with ELO for the last *limit* CS2 matches.
+
+        Uses ``GET /players/{player_id}/games/cs2/stats``.
+        Each item in the returned list typically contains an ``elo`` field.
+        """
+        try:
+            data = await self._request(
+                f"{FACEIT_BASE_URL}/players/{player_id}/games/cs2/stats",
+                params={"offset": 0, "limit": limit},
+            )
+            return data.get("items", [])
+        except Exception:
+            logger.warning(
+                "Failed to fetch per-match game stats for %s", player_id,
+                exc_info=True,
+            )
+            return []
+
     async def get_match_stats(self, match_id: str) -> dict[str, Any]:
         """Return raw match-stats payload for a single match."""
 
@@ -352,17 +375,16 @@ async def enrich_match_data(
     client: FaceitClient,
     semaphore: asyncio.Semaphore,
     current_elo: int | None = None,
+    elo_history: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch details for every match and return fully enriched objects.
 
     Each returned dict contains: ``map``, ``kills``, ``kd``, ``kr``, ``adr``,
     ``win``, ``elo_diff``, ``current_elo``.
 
-    **ELO calculation**: since the FACEIT API does not expose per-match ELO
-    history, we back-calculate a rolling ELO from the player's current ELO
-    using a heuristic of ±\ :data:`~app.config.DEFAULT_ELO_DIFF` per match.
-    The newest match gets the exact ``current_elo``; older matches are
-    approximations.
+    **ELO calculation**: uses real per-match ELO data from the
+    ``/players/{id}/games/cs2/stats`` endpoint.  Falls back to ±25 heuristic
+    only when the API data is unavailable.
 
     Parameters
     ----------
@@ -377,6 +399,8 @@ async def enrich_match_data(
         Concurrency limiter.
     current_elo:
         The player's current FACEIT ELO (from the profile endpoint).
+    elo_history:
+        Per-match items from ``get_player_game_stats``.
     """
 
     # 1. Fetch and enrich all matches concurrently
@@ -389,23 +413,49 @@ async def enrich_match_data(
         )
     )
 
-    # 2. Compute rolling ELO (newest → oldest)
-    #    The matches list is newest-first.  We walk from index 0 (newest)
-    #    to the end (oldest), assigning current_elo and elo_diff.
-    if current_elo is not None:
-        rolling = current_elo
-        for match in results:
-            win = match.get("win")
-            if win is True:
-                diff = DEFAULT_ELO_DIFF
-            elif win is False:
-                diff = -DEFAULT_ELO_DIFF
-            else:
-                diff = 0
+    # 2. Build match_id → elo lookup from per-match game stats
+    elo_by_match: dict[str, int] = {}
+    if elo_history:
+        for item in elo_history:
+            stats = item.get("stats", {})
+            mid = stats.get("matchId") or stats.get("match_id") or item.get("matchId")
+            elo_val = stats.get("Elo") or stats.get("elo")
+            if mid and elo_val is not None:
+                try:
+                    elo_by_match[str(mid)] = int(elo_val)
+                except (TypeError, ValueError):
+                    pass
 
-            match["current_elo"] = rolling
-            match["elo_diff"] = diff
-            # Move backwards: the ELO *before* this match was:
-            rolling -= diff
+    # 3. Compute ELO diff using real data
+    #    matches are newest-first; walk from newest to oldest.
+    if elo_by_match or current_elo is not None:
+        match_ids = [m.get("match_id", "") for m in matches]
+
+        for i, (match, mid) in enumerate(zip(results, match_ids)):
+            elo_after = elo_by_match.get(mid)
+
+            if elo_after is not None:
+                # Find ELO *before* this match from the next (older) match
+                elo_before = None
+                for j in range(i + 1, len(match_ids)):
+                    older_elo = elo_by_match.get(match_ids[j])
+                    if older_elo is not None:
+                        elo_before = older_elo
+                        break
+
+                if elo_before is not None:
+                    match["elo_diff"] = elo_after - elo_before
+                    match["current_elo"] = elo_after
+                else:
+                    # Oldest match with data — can't compute diff
+                    match["elo_diff"] = None
+                    match["current_elo"] = elo_after
+            elif current_elo is not None and i == 0:
+                # Newest match, no per-match data — use current ELO
+                match["current_elo"] = current_elo
+                match["elo_diff"] = None
+            else:
+                match["elo_diff"] = None
+                match["current_elo"] = None
 
     return results

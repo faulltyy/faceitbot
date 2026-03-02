@@ -52,6 +52,7 @@ async def _fetch_and_cache_matches(
     client: FaceitClient,
     redis: aioredis.Redis,
     current_elo: int | None = None,
+    elo_history: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Return enriched match data, using per-match Redis cache where possible.
 
@@ -86,7 +87,8 @@ async def _fetch_and_cache_matches(
     if uncached_items:
         enriched = await enrich_match_data(
             player_id, uncached_items, client, semaphore,
-            current_elo=None,  # ELO is computed after all matches are collected
+            current_elo=current_elo,
+            elo_history=elo_history,
         )
         # enrich_match_data now returns all matches (including fallbacks).
         # Map them back by position.
@@ -104,22 +106,52 @@ async def _fetch_and_cache_matches(
         if idx in cached_results:
             result.append(cached_results[idx])
 
-    # Now compute rolling ELO across ALL matches (cached + fresh)
-    if current_elo is not None:
-        from app.config import DEFAULT_ELO_DIFF
+    # Now compute ELO across ALL matches (cached + fresh)
+    # Re-run ELO calculation since cached entries don't have ELO
+    if elo_history or current_elo is not None:
+        # Build match_id → elo lookup
+        elo_by_match: dict[str, int] = {}
+        if elo_history:
+            for item in elo_history:
+                stats = item.get("stats", {})
+                mid = (
+                    stats.get("matchId")
+                    or stats.get("match_id")
+                    or item.get("matchId")
+                )
+                elo_val = stats.get("Elo") or stats.get("elo")
+                if mid and elo_val is not None:
+                    try:
+                        elo_by_match[str(mid)] = int(elo_val)
+                    except (TypeError, ValueError):
+                        pass
 
-        rolling = current_elo
-        for match in result:
-            win = match.get("win")
-            if win is True:
-                diff = DEFAULT_ELO_DIFF
-            elif win is False:
-                diff = -DEFAULT_ELO_DIFF
+        # We need match_ids from the original items list
+        all_match_ids = [m["match_id"] for m in match_items]
+
+        for i, match in enumerate(result):
+            if i >= len(all_match_ids):
+                break
+            mid = all_match_ids[i]
+            elo_after = elo_by_match.get(mid)
+
+            if elo_after is not None:
+                elo_before = None
+                for j in range(i + 1, len(all_match_ids)):
+                    older = elo_by_match.get(all_match_ids[j])
+                    if older is not None:
+                        elo_before = older
+                        break
+                match["current_elo"] = elo_after
+                match["elo_diff"] = (
+                    elo_after - elo_before if elo_before is not None else None
+                )
+            elif current_elo is not None and i == 0:
+                match["current_elo"] = current_elo
+                match["elo_diff"] = None
             else:
-                diff = 0
-            match["current_elo"] = rolling
-            match["elo_diff"] = diff
-            rolling -= diff
+                match["current_elo"] = None
+                match["elo_diff"] = None
 
     return result
 
@@ -177,13 +209,16 @@ async def get_player_matches_table(
     nickname: str,
     client: FaceitClient,
     redis: aioredis.Redis,
+    limit: int = 20,
 ) -> str:
-    """Return a formatted ``<pre>`` table of the last 30 matches."""
+    """Return a formatted ``<pre>`` table of the last *limit* matches."""
 
-    # 1. Summary cache check
-    cached = await redis.get(_matches_summary_key(nickname))
+    # 1. Summary cache check (include limit in key so different counts
+    #    don't collide)
+    cache_key = f"{_matches_summary_key(nickname)}:{limit}"
+    cached = await redis.get(cache_key)
     if cached:
-        logger.info("Matches summary cache HIT for %s", nickname)
+        logger.info("Matches summary cache HIT for %s (limit=%d)", nickname, limit)
         return cached.decode()
 
     # 2. Get player info (nickname + current ELO)
@@ -192,24 +227,29 @@ async def get_player_matches_table(
     display_name: str = player_info["nickname"]
     current_elo: int | None = player_info["elo"]
 
-    # 3. Fetch match history (up to 30)
-    match_items = await client.get_player_matches(player_id, limit=30)
+    # 3. Fetch match history
+    match_items = await client.get_player_matches(player_id, limit=limit)
 
-    # 4. Enrich (fetch stats + details, extract map, compute ELO, cache)
+    # 4. Fetch per-match ELO history
+    elo_history = await client.get_player_game_stats(player_id, limit=limit)
+
+    # 5. Enrich (fetch stats + details, extract map, compute ELO, cache)
     valid = await _fetch_and_cache_matches(
-        match_items, player_id, client, redis, current_elo=current_elo,
+        match_items, player_id, client, redis,
+        current_elo=current_elo,
+        elo_history=elo_history,
     )
 
     if not valid:
         raise NoMatchesFound("Could not retrieve stats for any CS2 matches.")
 
-    # 5. Format the HTML table
+    # 6. Format the HTML table
     message = format_matches_table(
         nickname=display_name,
         matches=valid,
         current_elo=current_elo,
     )
 
-    # 6. Cache
-    await redis.set(_matches_summary_key(nickname), message, ex=SUMMARY_CACHE_TTL)
+    # 7. Cache
+    await redis.set(cache_key, message, ex=SUMMARY_CACHE_TTL)
     return message
