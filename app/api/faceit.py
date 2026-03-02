@@ -252,21 +252,35 @@ def _extract_map_from_details(details: dict[str, Any]) -> str | None:
 
 # ---------- Player stats extraction ---------- #
 
+_logged_stat_keys = False  # Log stat keys once to discover ELO field name
+
+
 def _extract_player_stats(
     stats_data: dict[str, Any],
     player_id: str,
 ) -> dict[str, Any] | None:
-    """Pull Kills / K/D / K/R / ADR from the match-stats payload.
+    """Pull Kills / K/D / K/R / ADR / ELO from the match-stats payload.
 
     Returns ``None`` when the player cannot be found in the match.
     """
+    global _logged_stat_keys  # noqa: PLW0603
+
     for rnd in stats_data.get("rounds", []):
         for team in rnd.get("teams", []):
             for player in team.get("players", []):
                 if player.get("player_id") == player_id:
                     ps = player.get("player_stats", {})
+
+                    # Log all keys once to discover available fields
+                    if not _logged_stat_keys:
+                        logger.info(
+                            "player_stats keys: %s",
+                            sorted(ps.keys()),
+                        )
+                        _logged_stat_keys = True
+
                     try:
-                        return {
+                        result = {
                             "kills": float(ps.get("Kills", 0)),
                             "kd":    float(ps.get("K/D Ratio", 0)),
                             "kr":    float(ps.get("K/R Ratio", 0)),
@@ -274,6 +288,23 @@ def _extract_player_stats(
                         }
                     except (TypeError, ValueError):
                         return None
+
+                    # Try to extract ELO (field name varies)
+                    elo_raw = (
+                        ps.get("Elo")
+                        or ps.get("elo")
+                        or ps.get("ELO")
+                        or ps.get("player_elo")
+                        or player.get("elo")
+                        or player.get("player_elo")
+                    )
+                    if elo_raw is not None:
+                        try:
+                            result["match_elo"] = int(elo_raw)
+                        except (TypeError, ValueError):
+                            pass
+
+                    return result
     return None
 
 
@@ -375,6 +406,9 @@ async def _enrich_single_match(
 
     # ---- win/loss ----
     parsed["win"] = _determine_win(match_item, player_id)
+
+    # Include match_id for ELO tracking in the service layer
+    parsed["match_id"] = match_id
 
     # ELO fields are filled later by the service layer
     parsed["elo_diff"] = None
