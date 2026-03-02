@@ -22,6 +22,7 @@ from app.api.faceit import (
 )
 from app.config import (
     API_CONCURRENCY,
+    DEFAULT_ELO_DIFF,
     MATCH_CACHE_TTL,
     SUMMARY_CACHE_TTL,
 )
@@ -87,16 +88,12 @@ async def _fetch_and_cache_matches(
     if uncached_items:
         enriched = await enrich_match_data(
             player_id, uncached_items, client, semaphore,
-            current_elo=current_elo,
-            elo_history=elo_history,
         )
-        # enrich_match_data now returns all matches (including fallbacks).
-        # Map them back by position.
+        # enrich_match_data returns all matches (including fallbacks).
         for i, idx in enumerate(uncached_indices):
             if i < len(enriched):
                 data = enriched[i]
                 cached_results[idx] = data
-                # Cache for 7 days
                 cache_key = _match_key(uncached_items[i]["match_id"], player_id)
                 await redis.set(cache_key, json.dumps(data), ex=MATCH_CACHE_TTL)
 
@@ -106,10 +103,9 @@ async def _fetch_and_cache_matches(
         if idx in cached_results:
             result.append(cached_results[idx])
 
-    # Now compute ELO across ALL matches (cached + fresh)
-    # Re-run ELO calculation since cached entries don't have ELO
+    # Compute ELO across ALL matches (cached + fresh)
+    # Try real data first, fall back to ±DEFAULT_ELO_DIFF heuristic
     if elo_history or current_elo is not None:
-        # Build match_id → elo lookup
         elo_by_match: dict[str, int] = {}
         if elo_history:
             for item in elo_history:
@@ -118,6 +114,7 @@ async def _fetch_and_cache_matches(
                     stats.get("matchId")
                     or stats.get("match_id")
                     or item.get("matchId")
+                    or item.get("match_id")
                 )
                 elo_val = stats.get("Elo") or stats.get("elo")
                 if mid and elo_val is not None:
@@ -126,32 +123,46 @@ async def _fetch_and_cache_matches(
                     except (TypeError, ValueError):
                         pass
 
-        # We need match_ids from the original items list
         all_match_ids = [m["match_id"] for m in match_items]
+        has_real_elo = bool(elo_by_match)
 
-        for i, match in enumerate(result):
-            if i >= len(all_match_ids):
-                break
-            mid = all_match_ids[i]
-            elo_after = elo_by_match.get(mid)
-
-            if elo_after is not None:
-                elo_before = None
-                for j in range(i + 1, len(all_match_ids)):
-                    older = elo_by_match.get(all_match_ids[j])
-                    if older is not None:
-                        elo_before = older
-                        break
-                match["current_elo"] = elo_after
-                match["elo_diff"] = (
-                    elo_after - elo_before if elo_before is not None else None
-                )
-            elif current_elo is not None and i == 0:
-                match["current_elo"] = current_elo
-                match["elo_diff"] = None
-            else:
-                match["current_elo"] = None
-                match["elo_diff"] = None
+        if has_real_elo:
+            # --- Use real per-match ELO data ---
+            logger.info("Using real ELO data (%d matches found)", len(elo_by_match))
+            for i, match in enumerate(result):
+                if i >= len(all_match_ids):
+                    break
+                mid = all_match_ids[i]
+                elo_after = elo_by_match.get(mid)
+                if elo_after is not None:
+                    elo_before = None
+                    for j in range(i + 1, len(all_match_ids)):
+                        older = elo_by_match.get(all_match_ids[j])
+                        if older is not None:
+                            elo_before = older
+                            break
+                    match["current_elo"] = elo_after
+                    match["elo_diff"] = (
+                        elo_after - elo_before if elo_before is not None else None
+                    )
+                else:
+                    match["current_elo"] = None
+                    match["elo_diff"] = None
+        elif current_elo is not None:
+            # --- Fallback: ±DEFAULT_ELO_DIFF heuristic ---
+            logger.info("No real ELO data, using ±%d heuristic", DEFAULT_ELO_DIFF)
+            rolling = current_elo
+            for match in result:
+                win = match.get("win")
+                if win is True:
+                    diff = DEFAULT_ELO_DIFF
+                elif win is False:
+                    diff = -DEFAULT_ELO_DIFF
+                else:
+                    diff = 0
+                match["current_elo"] = rolling
+                match["elo_diff"] = diff
+                rolling -= diff
 
     return result
 

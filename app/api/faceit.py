@@ -171,7 +171,23 @@ class FaceitClient:
                 f"{FACEIT_BASE_URL}/players/{player_id}/games/cs2/stats",
                 params={"offset": 0, "limit": limit},
             )
-            return data.get("items", [])
+            items = data.get("items", [])
+            # Log the first item's structure to help debug ELO field names
+            if items:
+                first = items[0]
+                logger.info(
+                    "game_stats first item keys: %s",
+                    list(first.keys()) if isinstance(first, dict) else type(first),
+                )
+                stats = first.get("stats", {})
+                if stats:
+                    logger.info(
+                        "game_stats.stats keys: %s",
+                        list(stats.keys())[:15],  # first 15 to avoid spam
+                    )
+            else:
+                logger.info("game_stats returned 0 items for %s", player_id)
+            return items
         except Exception:
             logger.warning(
                 "Failed to fetch per-match game stats for %s", player_id,
@@ -299,29 +315,33 @@ async def _enrich_single_match(
     client: FaceitClient,
     semaphore: asyncio.Semaphore,
 ) -> dict[str, Any]:
-    """Fetch match stats + match details, return an enriched dict.
+    """Fetch match stats + match details in **parallel**, return enriched dict.
 
-    Each API call is handled **independently** so that a 404 on match-stats
-    doesn't prevent us from extracting the map from match-details (or vice
-    versa).  On total failure, returns a fallback object with ``map="-"``.
+    Uses ``asyncio.gather(return_exceptions=True)`` so that a failure on one
+    call doesn't cancel the other.  If both fail, returns a fallback object.
     """
     match_id: str = match_item["match_id"]
 
+    async with semaphore:
+        raw_stats, raw_details = await asyncio.gather(
+            client.get_match_stats(match_id),
+            client.get_match_details(match_id),
+            return_exceptions=True,
+        )
+
+    # Separate successes from failures
     stats_data: dict[str, Any] | None = None
     details_data: dict[str, Any] | None = None
 
-    async with semaphore:
-        # Fetch stats and details independently — don't let one failure
-        # discard the other response.
-        try:
-            stats_data = await client.get_match_stats(match_id)
-        except Exception:
-            logger.info("match_stats failed for %s", match_id, exc_info=True)
+    if isinstance(raw_stats, dict):
+        stats_data = raw_stats
+    elif isinstance(raw_stats, BaseException):
+        logger.debug("match_stats failed for %s: %s", match_id, raw_stats)
 
-        try:
-            details_data = await client.get_match_details(match_id)
-        except Exception:
-            logger.info("match_details failed for %s", match_id, exc_info=True)
+    if isinstance(raw_details, dict):
+        details_data = raw_details
+    elif isinstance(raw_details, BaseException):
+        logger.debug("match_details failed for %s: %s", match_id, raw_details)
 
     # ---- extract player stats ----
     parsed: dict[str, Any] | None = None
@@ -329,7 +349,6 @@ async def _enrich_single_match(
         parsed = _extract_player_stats(stats_data, player_id)
 
     if parsed is None:
-        # Stats unavailable — build a fallback but still try to get the map
         parsed = {
             "kills": 0,
             "kd": 0.0,
@@ -339,21 +358,16 @@ async def _enrich_single_match(
 
     # ---- extract map (multi-source) ----
     raw_map: str | None = None
-
-    # Source 1: match stats → round_stats.Map
-    if stats_data is not None and raw_map is None:
+    if stats_data is not None:
         raw_map = _extract_map_from_stats(stats_data)
-
-    # Source 2: match details → voting.map.name / voting.map.pick
-    if details_data is not None and raw_map is None:
+    if raw_map is None and details_data is not None:
         raw_map = _extract_map_from_details(details_data)
 
     parsed["map"] = normalize_map_name(raw_map)
 
     logger.info(
-        "Match %s → raw_map=%r → normalized=%s (stats=%s, details=%s)",
+        "Match %s → map=%s (stats=%s, details=%s)",
         match_id,
-        raw_map,
         parsed["map"],
         "OK" if stats_data is not None else "FAIL",
         "OK" if details_data is not None else "FAIL",
@@ -362,7 +376,7 @@ async def _enrich_single_match(
     # ---- win/loss ----
     parsed["win"] = _determine_win(match_item, player_id)
 
-    # ELO fields are filled later by enrich_match_data
+    # ELO fields are filled later by the service layer
     parsed["elo_diff"] = None
     parsed["current_elo"] = None
 
@@ -374,37 +388,14 @@ async def enrich_match_data(
     matches: list[dict[str, Any]],
     client: FaceitClient,
     semaphore: asyncio.Semaphore,
-    current_elo: int | None = None,
-    elo_history: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch details for every match and return fully enriched objects.
+    """Fetch details for every match and return enriched objects.
 
     Each returned dict contains: ``map``, ``kills``, ``kd``, ``kr``, ``adr``,
-    ``win``, ``elo_diff``, ``current_elo``.
-
-    **ELO calculation**: uses real per-match ELO data from the
-    ``/players/{id}/games/cs2/stats`` endpoint.  Falls back to ±25 heuristic
-    only when the API data is unavailable.
-
-    Parameters
-    ----------
-    player_id:
-        The FACEIT player ID.
-    matches:
-        Raw match-history items (from ``get_player_matches``),
-        **newest first**.
-    client:
-        An open :class:`FaceitClient`.
-    semaphore:
-        Concurrency limiter.
-    current_elo:
-        The player's current FACEIT ELO (from the profile endpoint).
-    elo_history:
-        Per-match items from ``get_player_game_stats``.
+    ``win``.  ELO fields (``elo_diff``, ``current_elo``) are set to ``None``
+    and must be populated by the caller.
     """
-
-    # 1. Fetch and enrich all matches concurrently
-    results: list[dict[str, Any]] = list(
+    return list(
         await asyncio.gather(
             *[
                 _enrich_single_match(m, player_id, client, semaphore)
@@ -412,50 +403,3 @@ async def enrich_match_data(
             ],
         )
     )
-
-    # 2. Build match_id → elo lookup from per-match game stats
-    elo_by_match: dict[str, int] = {}
-    if elo_history:
-        for item in elo_history:
-            stats = item.get("stats", {})
-            mid = stats.get("matchId") or stats.get("match_id") or item.get("matchId")
-            elo_val = stats.get("Elo") or stats.get("elo")
-            if mid and elo_val is not None:
-                try:
-                    elo_by_match[str(mid)] = int(elo_val)
-                except (TypeError, ValueError):
-                    pass
-
-    # 3. Compute ELO diff using real data
-    #    matches are newest-first; walk from newest to oldest.
-    if elo_by_match or current_elo is not None:
-        match_ids = [m.get("match_id", "") for m in matches]
-
-        for i, (match, mid) in enumerate(zip(results, match_ids)):
-            elo_after = elo_by_match.get(mid)
-
-            if elo_after is not None:
-                # Find ELO *before* this match from the next (older) match
-                elo_before = None
-                for j in range(i + 1, len(match_ids)):
-                    older_elo = elo_by_match.get(match_ids[j])
-                    if older_elo is not None:
-                        elo_before = older_elo
-                        break
-
-                if elo_before is not None:
-                    match["elo_diff"] = elo_after - elo_before
-                    match["current_elo"] = elo_after
-                else:
-                    # Oldest match with data — can't compute diff
-                    match["elo_diff"] = None
-                    match["current_elo"] = elo_after
-            elif current_elo is not None and i == 0:
-                # Newest match, no per-match data — use current ELO
-                match["current_elo"] = current_elo
-                match["elo_diff"] = None
-            else:
-                match["elo_diff"] = None
-                match["current_elo"] = None
-
-    return results
