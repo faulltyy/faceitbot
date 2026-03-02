@@ -211,8 +211,10 @@ async def get_player_stats(
         logger.info("Stats summary cache HIT for %s", nickname)
         return cached.decode()
 
-    # 2. Resolve player
-    player_id: str = await client.get_player_id(nickname)
+    # 2. Resolve player (includes ELO)
+    player_info = await client.get_player_info(nickname)
+    player_id: str = player_info["player_id"]
+    current_elo: int | None = player_info["elo"]
 
     # 3. Fetch + enrich last 20 matches
     matches = await client.get_player_matches(player_id, limit=20)
@@ -231,8 +233,10 @@ async def get_player_stats(
     winrate = (wins / total) * 100
 
     # 5. Format
+    elo_line = f"🏅 Current ELO: {current_elo}\n" if current_elo else ""
     message = (
         f"📊 CS2 Stats for {nickname}\n"
+        f"{elo_line}"
         f"🎯 Avg Kills: {avg_kills:.2f}\n"
         f"⚔️ Avg K/D: {avg_kd:.2f}\n"
         f"💀 Avg K/R: {avg_kr:.2f}\n"
