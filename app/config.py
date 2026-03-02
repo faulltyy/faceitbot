@@ -20,4 +20,4 @@ MAX_MATCHES: int = 20
 # Rate-limit / retry
 MAX_RETRIES: int = 5
 RETRY_BASE_DELAY: float = 2.0        # seconds, doubled on each retry
-API_CONCURRENCY: int = 3             # max simultaneous FACEIT API requests
+API_CONCURRENCY: int = 5             # max simultaneous FACEIT API requests
