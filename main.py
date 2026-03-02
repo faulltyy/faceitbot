@@ -25,6 +25,10 @@ async def main() -> None:
     redis = aioredis.from_url(REDIS_URL, decode_responses=False)
     logger.info("Connected to Redis at %s", REDIS_URL)
 
+    # Flush stale caches from previous deploys so new logic takes effect
+    await redis.flushall()
+    logger.info("Redis cache flushed on startup")
+
     # --- FACEIT API client ---
     faceit_client = FaceitClient()
     await faceit_client.open()

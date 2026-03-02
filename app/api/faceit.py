@@ -293,12 +293,12 @@ async def _enrich_single_match(
         try:
             stats_data = await client.get_match_stats(match_id)
         except Exception:
-            logger.debug("match_stats failed for %s", match_id, exc_info=True)
+            logger.info("match_stats failed for %s", match_id, exc_info=True)
 
         try:
             details_data = await client.get_match_details(match_id)
         except Exception:
-            logger.debug("match_details failed for %s", match_id, exc_info=True)
+            logger.info("match_details failed for %s", match_id, exc_info=True)
 
     # ---- extract player stats ----
     parsed: dict[str, Any] | None = None
@@ -327,9 +327,13 @@ async def _enrich_single_match(
 
     parsed["map"] = normalize_map_name(raw_map)
 
-    logger.debug(
-        "Match %s → raw_map=%r → normalized=%s",
-        match_id, raw_map, parsed["map"],
+    logger.info(
+        "Match %s → raw_map=%r → normalized=%s (stats=%s, details=%s)",
+        match_id,
+        raw_map,
+        parsed["map"],
+        "OK" if stats_data is not None else "FAIL",
+        "OK" if details_data is not None else "FAIL",
     )
 
     # ---- win/loss ----
