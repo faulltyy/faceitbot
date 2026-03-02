@@ -89,14 +89,36 @@ class FaceitClient:
 
     # -- public methods ---------------------------------------------------- #
 
-    async def get_player_id(self, nickname: str) -> str:
-        """Resolve a FACEIT nickname to a ``player_id``."""
+    async def get_player_info(self, nickname: str) -> dict[str, Any]:
+        """Resolve a FACEIT nickname to player details including ELO.
+
+        Returns a dict with keys: ``player_id``, ``nickname``, ``elo``.
+        ``elo`` may be *None* if the player has no CS2 data.
+        """
 
         data = await self._request(
             f"{FACEIT_BASE_URL}/players",
             params={"nickname": nickname},
         )
-        return data["player_id"]
+        elo: int | None = None
+        games = data.get("games", {})
+        cs2 = games.get("cs2", {})
+        if cs2:
+            try:
+                elo = int(cs2.get("faceit_elo", 0)) or None
+            except (TypeError, ValueError):
+                pass
+
+        return {
+            "player_id": data["player_id"],
+            "nickname": data.get("nickname", nickname),
+            "elo": elo,
+        }
+
+    async def get_player_id(self, nickname: str) -> str:
+        """Resolve a FACEIT nickname to a ``player_id``."""
+        info = await self.get_player_info(nickname)
+        return info["player_id"]
 
     async def get_player_matches(
         self,

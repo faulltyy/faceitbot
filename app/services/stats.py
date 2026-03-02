@@ -2,8 +2,8 @@
 
 Provides:
 * ``get_player_stats()``  — average stats for the last N matches (default 20).
-* ``get_player_matches_list()`` — per-match breakdown for the last N matches
-  (default 10).
+* ``get_player_matches_table()`` — per-match table (HTML ``<pre>``) for the
+  last N matches (default 10), including map, kills, K/D, K/R, ADR, and ELO.
 
 Both functions share the individual-match cache (7 days) so that overlapping
 match data is *never* re-fetched from the FACEIT API.
@@ -24,6 +24,7 @@ from app.config import (
     MATCH_CACHE_TTL,
     SUMMARY_CACHE_TTL,
 )
+from app.services.formatter import format_matches_table
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +48,27 @@ def _match_key(match_id: str, player_id: str) -> str:
 
 # ---- per-match stat extraction ------------------------------------------ #
 
+def _extract_map_name(match_data: dict[str, Any]) -> str | None:
+    """Pull the map name from ``round_stats.Map``."""
+    for rnd in match_data.get("rounds", []):
+        rs = rnd.get("round_stats", {})
+        map_name = rs.get("Map")
+        if map_name:
+            return str(map_name)
+    return None
+
+
 def _extract_player_stats(
     match_data: dict[str, Any],
     player_id: str,
 ) -> dict[str, Any] | None:
-    """Pull Kills / K/D / K/R / ADR from the match-stats payload.
+    """Pull Kills / K/D / K/R / ADR / map from the match-stats payload.
 
     Returns ``None`` when the player cannot be found in the match (e.g.
     the match was cancelled before they played).
     """
+    map_name = _extract_map_name(match_data)
+
     for rnd in match_data.get("rounds", []):
         for team in rnd.get("teams", []):
             for player in team.get("players", []):
@@ -67,6 +80,7 @@ def _extract_player_stats(
                             "kd":    float(ps.get("K/D Ratio", 0)),
                             "kr":    float(ps.get("K/R Ratio", 0)),
                             "adr":   float(ps.get("ADR", 0)),
+                            "map":   map_name,
                         }
                     except (TypeError, ValueError):
                         return None
@@ -213,12 +227,12 @@ async def get_player_stats(
     return message
 
 
-async def get_player_matches_list(
+async def get_player_matches_table(
     nickname: str,
     client: FaceitClient,
     redis: aioredis.Redis,
 ) -> str:
-    """Return a formatted *per-match* stats message for *nickname*.
+    """Return a formatted ``<pre>`` table of the last 10 matches.
 
     Same two-layer caching as ``get_player_stats`` but limited to 10 matches
     and using its own summary key.
@@ -230,25 +244,34 @@ async def get_player_matches_list(
         logger.info("Matches summary cache HIT for %s", nickname)
         return cached.decode()
 
-    # 2. Resolve + fetch (up to 10 matches)
-    _, valid = await _resolve_and_fetch(nickname, 10, client, redis)
+    # 2. Get player info (nickname + current ELO)
+    player_info = await client.get_player_info(nickname)
+    player_id: str = player_info["player_id"]
+    display_name: str = player_info["nickname"]
+    current_elo: int | None = player_info["elo"]
 
-    # 3. Format rows
-    total = len(valid)
-    lines: list[str] = [f"🎮 Last {total} Matches for {nickname}:"]
+    # 3. Fetch match history (up to 10 matches)
+    matches: list[dict[str, Any]] = await client.get_player_matches(
+        player_id, limit=10,
+    )
 
-    for idx, s in enumerate(valid, start=1):
-        wl = "[W]" if s.get("win") is True else "[L]"
-        kills = int(s["kills"])
-        kd = s["kd"]
-        kr = s["kr"]
-        adr = s["adr"]
-        lines.append(
-            f"{idx}. {wl} 🎯 K: {kills} | ⚔️ K/D: {kd:.2f} | 💀 K/R: {kr:.2f} | 💥 ADR: {adr:.2f}"
-        )
+    # 4. Gather per-match stats
+    semaphore = asyncio.Semaphore(API_CONCURRENCY)
+    results = await asyncio.gather(
+        *[_fetch_match_stats(m, player_id, client, redis, semaphore) for m in matches],
+    )
+    valid = [r for r in results if r is not None]
 
-    message = "\n".join(lines)
+    if not valid:
+        raise NoMatchesFound("Could not retrieve stats for any CS2 matches.")
 
-    # 4. Cache the summary
+    # 5. Format the HTML table
+    message = format_matches_table(
+        nickname=display_name,
+        matches=valid,
+        current_elo=current_elo,
+    )
+
+    # 6. Cache the summary
     await redis.set(_matches_summary_key(nickname), message, ex=SUMMARY_CACHE_TTL)
     return message

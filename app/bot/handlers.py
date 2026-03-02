@@ -113,13 +113,13 @@ async def cmd_matches(message: types.Message, faceit_client, redis) -> None:
 
     nickname = args[1].strip()
 
-    from app.services.stats import get_player_matches_list
+    from app.services.stats import get_player_matches_table
 
     await message.answer(f"🔍 Looking up recent matches for {nickname} …")
 
     try:
-        result = await get_player_matches_list(nickname, faceit_client, redis)
-        await message.answer(result)
+        result = await get_player_matches_table(nickname, faceit_client, redis)
+        await message.answer(result, parse_mode="HTML")
     except PlayerNotFound:
         await message.answer(f"❌ Player {nickname} not found on FACEIT.")
     except NoMatchesFound:
