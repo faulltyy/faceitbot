@@ -69,8 +69,15 @@ async def _fetch_and_cache_matches(
         cache_key = _match_key(m["match_id"], player_id)
         raw = await redis.get(cache_key)
         if raw:
-            logger.debug("Match cache HIT for %s", m["match_id"])
-            cached_results[idx] = json.loads(raw)
+            cached = json.loads(raw)
+            # Invalidate stale cache entries that are missing map data
+            if cached.get("map") in (None, "-", ""):
+                logger.debug("Match cache STALE (no map) for %s, re-fetching", m["match_id"])
+                uncached_indices.append(idx)
+                uncached_items.append(m)
+            else:
+                logger.debug("Match cache HIT for %s", m["match_id"])
+                cached_results[idx] = cached
         else:
             uncached_indices.append(idx)
             uncached_items.append(m)

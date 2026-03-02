@@ -278,39 +278,59 @@ async def _enrich_single_match(
 ) -> dict[str, Any]:
     """Fetch match stats + match details, return an enriched dict.
 
-    On failure, returns a fallback object with ``map="-"`` so the match
-    still appears in the table.
+    Each API call is handled **independently** so that a 404 on match-stats
+    doesn't prevent us from extracting the map from match-details (or vice
+    versa).  On total failure, returns a fallback object with ``map="-"``.
     """
     match_id: str = match_item["match_id"]
 
+    stats_data: dict[str, Any] | None = None
+    details_data: dict[str, Any] | None = None
+
     async with semaphore:
-        # Fetch both stats and details concurrently
+        # Fetch stats and details independently — don't let one failure
+        # discard the other response.
         try:
-            stats_data, details_data = await asyncio.gather(
-                client.get_match_stats(match_id),
-                client.get_match_details(match_id),
-            )
-        except PlayerNotFound:
-            logger.warning("Match %s not found (404), returning fallback", match_id)
-            return _fallback_match(match_item, player_id)
+            stats_data = await client.get_match_stats(match_id)
         except Exception:
-            logger.warning(
-                "Failed to fetch data for match %s, returning fallback",
-                match_id,
-                exc_info=True,
-            )
-            return _fallback_match(match_item, player_id)
+            logger.debug("match_stats failed for %s", match_id, exc_info=True)
+
+        try:
+            details_data = await client.get_match_details(match_id)
+        except Exception:
+            logger.debug("match_details failed for %s", match_id, exc_info=True)
 
     # ---- extract player stats ----
-    parsed = _extract_player_stats(stats_data, player_id)
+    parsed: dict[str, Any] | None = None
+    if stats_data is not None:
+        parsed = _extract_player_stats(stats_data, player_id)
+
     if parsed is None:
-        return _fallback_match(match_item, player_id)
+        # Stats unavailable — build a fallback but still try to get the map
+        parsed = {
+            "kills": 0,
+            "kd": 0.0,
+            "kr": 0.0,
+            "adr": 0.0,
+        }
 
     # ---- extract map (multi-source) ----
-    raw_map = _extract_map_from_stats(stats_data)
-    if not raw_map:
+    raw_map: str | None = None
+
+    # Source 1: match stats → round_stats.Map
+    if stats_data is not None and raw_map is None:
+        raw_map = _extract_map_from_stats(stats_data)
+
+    # Source 2: match details → voting.map.name / voting.map.pick
+    if details_data is not None and raw_map is None:
         raw_map = _extract_map_from_details(details_data)
+
     parsed["map"] = normalize_map_name(raw_map)
+
+    logger.debug(
+        "Match %s → raw_map=%r → normalized=%s",
+        match_id, raw_map, parsed["map"],
+    )
 
     # ---- win/loss ----
     parsed["win"] = _determine_win(match_item, player_id)
