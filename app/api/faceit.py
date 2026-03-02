@@ -154,6 +154,11 @@ class FaceitClient:
         items: list[dict[str, Any]] = data.get("items", [])
         if not items:
             raise NoMatchesFound("No CS2 matches found for this player")
+        # Log structure of first item to discover ELO field
+        logger.info(
+            "match_history first item keys: %s",
+            sorted(items[0].keys()),
+        )
         return items
 
     async def get_player_game_stats(
