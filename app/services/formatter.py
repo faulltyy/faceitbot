@@ -28,15 +28,15 @@ def safe_float(value: Any, precision: int = 2) -> str:
         return "-"
 
 
-def format_elo(elo_diff: int | float | None, elo_after: int | float | None) -> str:
+def format_elo(elo_diff: int | float | None, current_elo: int | float | None) -> str:
     """Format ELO column: ``+25(2115)`` or ``N/A``."""
-    if elo_diff is None or elo_after is None:
+    if elo_diff is None or current_elo is None:
         return "N/A"
     try:
         diff = int(elo_diff)
-        after = int(elo_after)
+        elo = int(current_elo)
         sign = "+" if diff >= 0 else ""
-        return f"{sign}{diff}({after})"
+        return f"{sign}{diff}({elo})"
     except (TypeError, ValueError):
         return "N/A"
 
@@ -138,7 +138,7 @@ def format_matches_table(
         kd = safe_float(m.get("kd"))
         kr = safe_float(m.get("kr"))
         adr = safe_float(m.get("adr"))
-        elo_str = format_elo(m.get("elo_diff"), m.get("elo_after"))
+        elo_str = format_elo(m.get("elo_diff"), m.get("current_elo"))
 
         lines.append(_data_line(idx, result, map_name, kills, kd, kr, adr, elo_str))
 

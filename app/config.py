@@ -15,7 +15,10 @@ MATCH_CACHE_TTL: int = 7 * 86_400   # 7 days — match stats never change
 SUMMARY_CACHE_TTL: int = 900         # 15 minutes — anti-spam for same nickname
 
 # Limits
-MAX_MATCHES: int = 20
+MAX_MATCHES: int = 30
+
+# ELO heuristic (used when per-match ELO is not available from the API)
+DEFAULT_ELO_DIFF: int = 25
 
 # Rate-limit / retry
 MAX_RETRIES: int = 5

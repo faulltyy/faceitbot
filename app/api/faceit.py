@@ -15,6 +15,7 @@ from typing import Any
 import aiohttp
 
 from app.config import (
+    DEFAULT_ELO_DIFF,
     FACEIT_API_KEY,
     FACEIT_BASE_URL,
     MAX_RETRIES,
@@ -185,21 +186,27 @@ def _extract_map_from_stats(stats_data: dict[str, Any]) -> str | None:
 
 
 def _extract_map_from_details(details: dict[str, Any]) -> str | None:
-    """Try to pull map from match details ``voting`` field."""
-    voting = details.get("voting")
-    if not voting:
-        return None
+    """Try to pull map from match details ``voting`` field.
 
-    # voting.map.pick is typically ["de_mirage"]
-    map_obj = voting.get("map", {})
-    if isinstance(map_obj, dict):
-        pick = map_obj.get("pick")
-        if isinstance(pick, list) and pick:
-            return str(pick[0])
-        # Some responses use "name" directly
-        name = map_obj.get("name")
-        if name:
-            return str(name)
+    Falls back to ``competition_name`` if voting data is missing.
+    """
+    voting = details.get("voting")
+    if voting:
+        # voting.map.pick is typically ["de_mirage"]
+        map_obj = voting.get("map", {})
+        if isinstance(map_obj, dict):
+            # Check "name" first (most reliable when present)
+            name = map_obj.get("name")
+            if name:
+                return str(name)
+            pick = map_obj.get("pick")
+            if isinstance(pick, list) and pick:
+                return str(pick[0])
+
+    # Fallback: competition_name sometimes contains the map
+    comp = details.get("competition_name")
+    if comp:
+        return str(comp)
 
     return None
 
@@ -249,15 +256,30 @@ def _determine_win(
 
 # ---------- enrich_match_data ---------- #
 
+def _fallback_match(match_item: dict[str, Any], player_id: str) -> dict[str, Any]:
+    """Return a minimal match dict when API calls fail."""
+    return {
+        "map": "-",
+        "kills": 0,
+        "kd": 0.0,
+        "kr": 0.0,
+        "adr": 0.0,
+        "win": _determine_win(match_item, player_id),
+        "elo_diff": None,
+        "current_elo": None,
+    }
+
+
 async def _enrich_single_match(
     match_item: dict[str, Any],
     player_id: str,
     client: FaceitClient,
     semaphore: asyncio.Semaphore,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """Fetch match stats + match details, return an enriched dict.
 
-    Returns ``None`` if the player's data cannot be found.
+    On failure, returns a fallback object with ``map="-"`` so the match
+    still appears in the table.
     """
     match_id: str = match_item["match_id"]
 
@@ -269,16 +291,20 @@ async def _enrich_single_match(
                 client.get_match_details(match_id),
             )
         except PlayerNotFound:
-            logger.warning("Match %s not found (404), skipping", match_id)
-            return None
+            logger.warning("Match %s not found (404), returning fallback", match_id)
+            return _fallback_match(match_item, player_id)
         except Exception:
-            logger.warning("Failed to fetch data for match %s", match_id, exc_info=True)
-            return None
+            logger.warning(
+                "Failed to fetch data for match %s, returning fallback",
+                match_id,
+                exc_info=True,
+            )
+            return _fallback_match(match_item, player_id)
 
     # ---- extract player stats ----
     parsed = _extract_player_stats(stats_data, player_id)
     if parsed is None:
-        return None
+        return _fallback_match(match_item, player_id)
 
     # ---- extract map (multi-source) ----
     raw_map = _extract_map_from_stats(stats_data)
@@ -289,10 +315,9 @@ async def _enrich_single_match(
     # ---- win/loss ----
     parsed["win"] = _determine_win(match_item, player_id)
 
-    # ---- ELO: try to find in match details ----
-    # Some match types expose ELO data; extract if present
+    # ELO fields are filled later by enrich_match_data
     parsed["elo_diff"] = None
-    parsed["elo_after"] = None
+    parsed["current_elo"] = None
 
     return parsed
 
@@ -302,25 +327,61 @@ async def enrich_match_data(
     matches: list[dict[str, Any]],
     client: FaceitClient,
     semaphore: asyncio.Semaphore,
+    current_elo: int | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch details for every match and return fully enriched objects.
 
     Each returned dict contains: ``map``, ``kills``, ``kd``, ``kr``, ``adr``,
-    ``win``, ``elo_diff``, ``elo_after``.
+    ``win``, ``elo_diff``, ``current_elo``.
+
+    **ELO calculation**: since the FACEIT API does not expose per-match ELO
+    history, we back-calculate a rolling ELO from the player's current ELO
+    using a heuristic of ±\ :data:`~app.config.DEFAULT_ELO_DIFF` per match.
+    The newest match gets the exact ``current_elo``; older matches are
+    approximations.
 
     Parameters
     ----------
     player_id:
         The FACEIT player ID.
     matches:
-        Raw match-history items (from ``get_player_matches``).
+        Raw match-history items (from ``get_player_matches``),
+        **newest first**.
     client:
         An open :class:`FaceitClient`.
     semaphore:
         Concurrency limiter.
+    current_elo:
+        The player's current FACEIT ELO (from the profile endpoint).
     """
 
-    results = await asyncio.gather(
-        *[_enrich_single_match(m, player_id, client, semaphore) for m in matches],
+    # 1. Fetch and enrich all matches concurrently
+    results: list[dict[str, Any]] = list(
+        await asyncio.gather(
+            *[
+                _enrich_single_match(m, player_id, client, semaphore)
+                for m in matches
+            ],
+        )
     )
-    return [r for r in results if r is not None]
+
+    # 2. Compute rolling ELO (newest → oldest)
+    #    The matches list is newest-first.  We walk from index 0 (newest)
+    #    to the end (oldest), assigning current_elo and elo_diff.
+    if current_elo is not None:
+        rolling = current_elo
+        for match in results:
+            win = match.get("win")
+            if win is True:
+                diff = DEFAULT_ELO_DIFF
+            elif win is False:
+                diff = -DEFAULT_ELO_DIFF
+            else:
+                diff = 0
+
+            match["current_elo"] = rolling
+            match["elo_diff"] = diff
+            # Move backwards: the ELO *before* this match was:
+            rolling -= diff
+
+    return results

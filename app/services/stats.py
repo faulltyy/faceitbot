@@ -51,6 +51,7 @@ async def _fetch_and_cache_matches(
     player_id: str,
     client: FaceitClient,
     redis: aioredis.Redis,
+    current_elo: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return enriched match data, using per-match Redis cache where possible.
 
@@ -78,26 +79,40 @@ async def _fetch_and_cache_matches(
     if uncached_items:
         enriched = await enrich_match_data(
             player_id, uncached_items, client, semaphore,
+            current_elo=None,  # ELO is computed after all matches are collected
         )
-        # enrich_match_data filters out None, but returns in order of valid items.
-        # We need to map them back. Since enrichment can skip failed matches,
-        # we'll store results and cache them.
-        enriched_iter = iter(enriched)
-        for idx, m in zip(uncached_indices, uncached_items):
-            try:
-                data = next(enriched_iter)
-            except StopIteration:
-                break
-            cached_results[idx] = data
-            # Cache for 7 days
-            cache_key = _match_key(m["match_id"], player_id)
-            await redis.set(cache_key, json.dumps(data), ex=MATCH_CACHE_TTL)
+        # enrich_match_data now returns all matches (including fallbacks).
+        # Map them back by position.
+        for i, idx in enumerate(uncached_indices):
+            if i < len(enriched):
+                data = enriched[i]
+                cached_results[idx] = data
+                # Cache for 7 days
+                cache_key = _match_key(uncached_items[i]["match_id"], player_id)
+                await redis.set(cache_key, json.dumps(data), ex=MATCH_CACHE_TTL)
 
     # Rebuild the list in order
     result = []
     for idx in range(len(match_items)):
         if idx in cached_results:
             result.append(cached_results[idx])
+
+    # Now compute rolling ELO across ALL matches (cached + fresh)
+    if current_elo is not None:
+        from app.config import DEFAULT_ELO_DIFF
+
+        rolling = current_elo
+        for match in result:
+            win = match.get("win")
+            if win is True:
+                diff = DEFAULT_ELO_DIFF
+            elif win is False:
+                diff = -DEFAULT_ELO_DIFF
+            else:
+                diff = 0
+            match["current_elo"] = rolling
+            match["elo_diff"] = diff
+            rolling -= diff
 
     return result
 
@@ -156,7 +171,7 @@ async def get_player_matches_table(
     client: FaceitClient,
     redis: aioredis.Redis,
 ) -> str:
-    """Return a formatted ``<pre>`` table of the last 10 matches."""
+    """Return a formatted ``<pre>`` table of the last 30 matches."""
 
     # 1. Summary cache check
     cached = await redis.get(_matches_summary_key(nickname))
@@ -170,40 +185,24 @@ async def get_player_matches_table(
     display_name: str = player_info["nickname"]
     current_elo: int | None = player_info["elo"]
 
-    # 3. Fetch match history (up to 10)
-    match_items = await client.get_player_matches(player_id, limit=10)
+    # 3. Fetch match history (up to 30)
+    match_items = await client.get_player_matches(player_id, limit=30)
 
-    # 4. Enrich (fetch stats + details, extract map, cache)
-    valid = await _fetch_and_cache_matches(match_items, player_id, client, redis)
+    # 4. Enrich (fetch stats + details, extract map, compute ELO, cache)
+    valid = await _fetch_and_cache_matches(
+        match_items, player_id, client, redis, current_elo=current_elo,
+    )
 
     if not valid:
         raise NoMatchesFound("Could not retrieve stats for any CS2 matches.")
 
-    # 5. ELO tracking: reverse to chronological (oldest → newest),
-    #    then walk forward to compute rolling ELO.
-    #    We know current_elo is the ELO *after* the most recent match.
-    if current_elo is not None:
-        # valid list is newest-first; reverse for chrono processing
-        chrono = list(reversed(valid))
-
-        # Walk backwards from current_elo through the chrono list
-        # to assign elo_after to each match.
-        # Match N (newest) → elo_after = current_elo
-        # Match N-1 → elo_after = current_elo - elo_change_N  (unknown)
-        # Without per-match ELO data from the API, we can only reliably
-        # assign current_elo to the NEWEST match.  For older matches
-        # we leave elo_diff/elo_after as None.
-        #
-        # Assign the newest match's elo_after to current_elo.
-        valid[0]["elo_after"] = current_elo
-
-    # 6. Format the HTML table
+    # 5. Format the HTML table
     message = format_matches_table(
         nickname=display_name,
         matches=valid,
         current_elo=current_elo,
     )
 
-    # 7. Cache
+    # 6. Cache
     await redis.set(_matches_summary_key(nickname), message, ex=SUMMARY_CACHE_TTL)
     return message

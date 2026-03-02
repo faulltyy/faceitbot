@@ -23,7 +23,7 @@ router = Router(name="faceit_stats")
 
 BOT_COMMANDS = [
     BotCommand(command="stats", description="Average stats for the last 20 CS2 matches"),
-    BotCommand(command="matches", description="Per-match stats for the last 10 CS2 matches"),
+    BotCommand(command="matches", description="Per-match stats for the last 30 CS2 matches"),
     BotCommand(command="help", description="Show help and usage examples"),
 ]
 
