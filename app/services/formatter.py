@@ -1,4 +1,4 @@
-"""Monospaced table formatter for Telegram ``<pre>`` blocks.
+"""Monospaced table formatter for Telegram ``<pre>`` blocks with colored emoji.
 
 The main entry-point is :func:`format_matches_table` which accepts a list of
 pre-parsed match dicts and returns an HTML string ready for
@@ -11,24 +11,72 @@ from html import escape
 from typing import Any
 
 
-# ---- helpers ------------------------------------------------------------- #
+# ---- visual-width helpers ------------------------------------------------ #
+
+def _visual_width(text: str) -> int:
+    """Calculate visual width in a monospace font (emoji = 2 cells)."""
+    w = 0
+    for ch in text:
+        # Emoji and pictographic symbols render as 2 cells in monospace
+        cp = ord(ch)
+        if cp >= 0x1F300:
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def _vpad(text: str, width: int, align: str = "<") -> str:
+    """Pad *text* to a fixed *visual* width (accounts for wide emoji)."""
+    pad = max(0, width - _visual_width(text))
+    if align == ">":
+        return " " * pad + text
+    return text + " " * pad
+
 
 def _trunc(text: str, w: int) -> str:
     """Truncate *text* to *w* chars, appending ``…`` when shortened."""
     return text if len(text) <= w else text[: w - 1] + "…"
 
 
-def _fmt(value: Any, precision: int = 2) -> str:
-    """Float → string, or ``-`` on failure."""
-    try:
-        return f"{float(value):.{precision}f}"
-    except (TypeError, ValueError):
-        return "-"
+# ---- color helpers ------------------------------------------------------- #
+
+def _color_result(win: bool | None) -> str:
+    if win is True:
+        return "🟢"
+    return "🔴"
+
+
+def _color_kd(val: float) -> str:
+    emoji = "🟢" if val >= 1.0 else "🔴"
+    return f"{emoji}{val:.2f}"
+
+
+def _color_kr(val: float) -> str:
+    if val < 0.6:
+        emoji = "🔴"
+    elif val <= 0.75:
+        emoji = "🟠"
+    else:
+        emoji = "🟢"
+    return f"{emoji}{val:.2f}"
+
+
+def _color_adr(val: float) -> str:
+    if val < 60:
+        emoji = "🔴"
+    elif val <= 75:
+        emoji = "🟠"
+    else:
+        emoji = "🟢"
+    return f"{emoji}{val:.1f}"
 
 
 def _elo(diff: int | float | None, elo: int | float | None) -> str:
     """Format ELO column: ``+25(2115)`` or ``N/A``."""
     if diff is None or elo is None:
+        if elo is not None:
+            return str(int(elo))
         return "N/A"
     try:
         d, e = int(diff), int(elo)
@@ -37,29 +85,29 @@ def _elo(diff: int | float | None, elo: int | float | None) -> str:
         return "N/A"
 
 
-# ---- table layout -------------------------------------------------------- #
+# ---- column spec --------------------------------------------------------- #
+# (header, visual_width, align)
 
-# Column spec: (header, width, align)
-#   align: '<' left, '>' right
 _COLS = [
     ("#",   2, ">"),
-    ("R",   1, "<"),
-    ("Map", 7, "<"),
+    ("R",   2, "<"),     # emoji: 🟢/🔴
+    ("Map", 6, "<"),
     ("K",   2, ">"),
-    ("K/D", 4, ">"),
-    ("K/R", 4, ">"),
-    ("ADR", 5, ">"),
+    ("D",   2, ">"),
+    ("K/D", 6, ">"),     # emoji + 4-char value
+    ("K/R", 6, ">"),     # emoji + 4-char value
+    ("ADR", 6, ">"),     # emoji + 4-char value
     ("ELO", 10, ">"),
 ]
 
-_SEP = " "  # single space between columns
+_SEP = " "
 
 
 def _row(values: list[str]) -> str:
-    """Build one fixed-width row from a list of pre-formatted cell strings."""
+    """Build one row using visual-width-aware padding."""
     parts: list[str] = []
     for (_, w, align), val in zip(_COLS, values):
-        parts.append(f"{val:{align}{w}}")
+        parts.append(_vpad(val, w, align))
     return _SEP.join(parts)
 
 
@@ -70,19 +118,7 @@ def format_matches_table(
     matches: list[dict[str, Any]],
     current_elo: int | None = None,
 ) -> str:
-    """Return a fully formatted HTML string for the last-N matches table.
-
-    Parameters
-    ----------
-    nickname:
-        The FACEIT nickname (displayed in the title).
-    matches:
-        Pre-parsed match dicts, each containing at minimum:
-        ``map``, ``kills``, ``kd``, ``kr``, ``adr``, ``win``
-        and optionally ``elo_diff``, ``current_elo``.
-    current_elo:
-        The player's current FACEIT ELO (shown in the header).
-    """
+    """Return a fully formatted HTML string for the last-N matches table."""
     if not matches:
         return "No recent CS2 matches found."
 
@@ -94,26 +130,28 @@ def format_matches_table(
 
     # ---- build table ----------------------------------------------------- #
     hdr = _row([h for h, _, _ in _COLS])
-    sep = "-" * len(hdr)
+    sep = "-" * _visual_width(hdr)
     lines: list[str] = [hdr, sep]
 
     for idx, m in enumerate(matches, start=1):
-        result = "W" if m.get("win") is True else "L"
+        win = m.get("win")
         map_name = m.get("map") or "-"
-        kills = str(int(m.get("kills", 0)))
-        kd = _fmt(m.get("kd"))
-        kr = _fmt(m.get("kr"))
-        adr = _fmt(m.get("adr"), precision=1)
+        kills = int(m.get("kills", 0))
+        deaths = int(m.get("deaths", 0))
+        kd = float(m.get("kd", 0))
+        kr = float(m.get("kr", 0))
+        adr = float(m.get("adr", 0))
         elo_str = _elo(m.get("elo_diff"), m.get("current_elo"))
 
         lines.append(_row([
             str(idx),
-            result,
-            _trunc(map_name, 7),
-            kills,
-            kd,
-            kr,
-            adr,
+            _color_result(win),
+            _trunc(map_name, 6),
+            str(kills),
+            str(deaths),
+            _color_kd(kd),
+            _color_kr(kr),
+            _color_adr(adr),
             elo_str,
         ]))
 

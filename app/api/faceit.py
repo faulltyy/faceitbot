@@ -287,6 +287,7 @@ def _extract_player_stats(
                     try:
                         result = {
                             "kills": float(ps.get("Kills", 0)),
+                            "deaths": float(ps.get("Deaths", 0)),
                             "kd":    float(ps.get("K/D Ratio", 0)),
                             "kr":    float(ps.get("K/R Ratio", 0)),
                             "adr":   float(ps.get("ADR", 0)),
@@ -336,6 +337,7 @@ def _fallback_match(match_item: dict[str, Any], player_id: str) -> dict[str, Any
     return {
         "map": "-",
         "kills": 0,
+        "deaths": 0,
         "kd": 0.0,
         "kr": 0.0,
         "adr": 0.0,
@@ -387,6 +389,7 @@ async def _enrich_single_match(
     if parsed is None:
         parsed = {
             "kills": 0,
+            "deaths": 0,
             "kd": 0.0,
             "kr": 0.0,
             "adr": 0.0,
