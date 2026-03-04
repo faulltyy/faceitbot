@@ -1,7 +1,10 @@
 import os
 
-# Admin
-ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0"))
+# Admin (must be a numeric Telegram user ID, not a username)
+try:
+    ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0"))
+except (TypeError, ValueError):
+    ADMIN_ID: int = 0
 
 # Telegram
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")

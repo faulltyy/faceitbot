@@ -34,8 +34,11 @@ async def main() -> None:
     redis = aioredis.from_url(REDIS_URL, decode_responses=False)
     logger.info("Connected to Redis at %s", REDIS_URL)
 
-    await redis.flushall()
-    logger.info("Redis cache flushed on startup")
+    try:
+        await redis.flushall()
+        logger.info("Redis cache flushed on startup")
+    except Exception as exc:
+        logger.warning("Could not flush Redis (read-only?): %s", exc)
 
     # --- Analytics service ---
     analytics = AnalyticsService(pool=pg_pool, redis=redis)
