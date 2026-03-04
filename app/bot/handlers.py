@@ -25,6 +25,8 @@ BOT_COMMANDS = [
     BotCommand(command="stats", description="Average stats for the last 20 CS2 matches"),
     BotCommand(command="matches", description="Per-match stats: /matches nick [count]"),
     BotCommand(command="help", description="Show help and usage examples"),
+    BotCommand(command="admin", description="Admin panel (authorized only)"),
+    BotCommand(command="astats", description="Bot analytics (admin only)"),
 ]
 
 
@@ -66,7 +68,7 @@ async def cmd_help(message: types.Message) -> None:
 # ---- /stats -------------------------------------------------------------- #
 
 @router.message(Command("stats"))
-async def cmd_stats(message: types.Message, faceit_client, redis) -> None:
+async def cmd_stats(message: types.Message, faceit_client, redis, analytics=None) -> None:
     """Handle ``/stats <nickname>``."""
 
     args = message.text.split(maxsplit=1) if message.text else []
@@ -85,12 +87,26 @@ async def cmd_stats(message: types.Message, faceit_client, redis) -> None:
     try:
         result = await get_player_stats(nickname, faceit_client, redis)
         await message.answer(result)
+        if analytics:
+            await analytics.track_event(
+                user_id=message.from_user.id if message.from_user else None,
+                username=message.from_user.username if message.from_user else None,
+                event_name="player_search",
+                metadata={"nickname": nickname, "type": "stats"},
+            )
     except PlayerNotFound:
         await message.answer(f"❌ Player {nickname} not found on FACEIT.")
     except NoMatchesFound:
         await message.answer(f"ℹ️ No CS2 matches found for {nickname}.")
     except FaceitApiError as exc:
         logger.exception("FACEIT API error for nickname=%s", nickname)
+        if analytics:
+            await analytics.track_event(
+                user_id=message.from_user.id if message.from_user else None,
+                username=message.from_user.username if message.from_user else None,
+                event_name="api_error",
+                metadata={"nickname": nickname, "error": str(exc)[:200]},
+            )
         await message.answer(
             f"⚠️ FACEIT API error: {exc}\nPlease try again later."
         )
@@ -102,7 +118,7 @@ async def cmd_stats(message: types.Message, faceit_client, redis) -> None:
 # ---- /matches ------------------------------------------------------------ #
 
 @router.message(Command("matches"))
-async def cmd_matches(message: types.Message, faceit_client, redis) -> None:
+async def cmd_matches(message: types.Message, faceit_client, redis, analytics=None) -> None:
     """Handle ``/matches <nickname> [count]``."""
 
     parts = message.text.split() if message.text else []
@@ -131,12 +147,26 @@ async def cmd_matches(message: types.Message, faceit_client, redis) -> None:
     try:
         result = await get_player_matches_table(nickname, faceit_client, redis, limit=limit)
         await message.answer(result, parse_mode="HTML")
+        if analytics:
+            await analytics.track_event(
+                user_id=message.from_user.id if message.from_user else None,
+                username=message.from_user.username if message.from_user else None,
+                event_name="player_search",
+                metadata={"nickname": nickname, "type": "matches", "limit": limit},
+            )
     except PlayerNotFound:
         await message.answer(f"❌ Player {nickname} not found on FACEIT.")
     except NoMatchesFound:
         await message.answer(f"ℹ️ No CS2 matches found for {nickname}.")
     except FaceitApiError as exc:
         logger.exception("FACEIT API error for nickname=%s", nickname)
+        if analytics:
+            await analytics.track_event(
+                user_id=message.from_user.id if message.from_user else None,
+                username=message.from_user.username if message.from_user else None,
+                event_name="api_error",
+                metadata={"nickname": nickname, "error": str(exc)[:200]},
+            )
         await message.answer(
             f"⚠️ FACEIT API error: {exc}\nPlease try again later."
         )

@@ -1,5 +1,8 @@
 import os
 
+# Admin
+ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0"))
+
 # Telegram
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
@@ -7,12 +10,16 @@ TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 FACEIT_API_KEY: str = os.getenv("FACEIT_API_KEY", "")
 FACEIT_BASE_URL: str = "https://open.faceit.com/data/v4"
 
+# PostgreSQL
+DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/faceitbot")
+
 # Redis
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 # Cache TTLs (seconds)
 MATCH_CACHE_TTL: int = 7 * 86_400   # 7 days — match stats never change
 SUMMARY_CACHE_TTL: int = 900         # 15 minutes — anti-spam for same nickname
+METRICS_CACHE_TTL: int = 60          # 60 seconds — admin metrics cache
 
 # Limits
 MAX_MATCHES: int = 30
