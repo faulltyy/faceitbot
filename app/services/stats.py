@@ -69,7 +69,10 @@ async def _fetch_and_cache_matches(
 
     for idx, m in enumerate(match_items):
         cache_key = _match_key(m["match_id"], player_id)
-        raw = await redis.get(cache_key)
+        try:
+            raw = await redis.get(cache_key)
+        except Exception:
+            raw = None
         if raw:
             cached = json.loads(raw)
             # Invalidate stale cache entries that are missing map data
@@ -95,7 +98,10 @@ async def _fetch_and_cache_matches(
                 data = enriched[i]
                 cached_results[idx] = data
                 cache_key = _match_key(uncached_items[i]["match_id"], player_id)
-                await redis.set(cache_key, json.dumps(data), ex=MATCH_CACHE_TTL)
+                try:
+                    await redis.set(cache_key, json.dumps(data), ex=MATCH_CACHE_TTL)
+                except Exception:
+                    pass  # read-only Redis
 
     # Rebuild the list in order
     result = []
@@ -206,7 +212,10 @@ async def get_player_stats(
     """Return a formatted *average* stats message for *nickname*."""
 
     # 1. Summary cache check
-    cached = await redis.get(_stats_summary_key(nickname))
+    try:
+        cached = await redis.get(_stats_summary_key(nickname))
+    except Exception:
+        cached = None
     if cached:
         logger.info("Stats summary cache HIT for %s", nickname)
         return cached.decode()
@@ -245,7 +254,10 @@ async def get_player_stats(
     )
 
     # 6. Cache the summary
-    await redis.set(_stats_summary_key(nickname), message, ex=SUMMARY_CACHE_TTL)
+    try:
+        await redis.set(_stats_summary_key(nickname), message, ex=SUMMARY_CACHE_TTL)
+    except Exception:
+        pass  # read-only Redis
     return message
 
 
@@ -260,7 +272,10 @@ async def get_player_matches_table(
     # 1. Summary cache check (include limit in key so different counts
     #    don't collide)
     cache_key = f"{_matches_summary_key(nickname)}:{limit}"
-    cached = await redis.get(cache_key)
+    try:
+        cached = await redis.get(cache_key)
+    except Exception:
+        cached = None
     if cached:
         logger.info("Matches summary cache HIT for %s (limit=%d)", nickname, limit)
         return cached.decode()
@@ -295,5 +310,8 @@ async def get_player_matches_table(
     )
 
     # 7. Cache
-    await redis.set(cache_key, message, ex=SUMMARY_CACHE_TTL)
+    try:
+        await redis.set(cache_key, message, ex=SUMMARY_CACHE_TTL)
+    except Exception:
+        pass  # read-only Redis
     return message
