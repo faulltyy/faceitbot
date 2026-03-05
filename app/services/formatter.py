@@ -7,6 +7,7 @@ pre-parsed match dicts and returns an HTML string ready for
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from html import escape
 from typing import Any
 
@@ -85,6 +86,22 @@ def _elo(diff: int | float | None, elo: int | float | None) -> str:
         return "N/A"
 
 
+# ---- datetime helper ----------------------------------------------------- #
+
+def _format_datetime(ts: int | float | None) -> str:
+    """Convert a Unix timestamp to ``March 8 14:40`` format (UTC)."""
+    if ts is None:
+        return "-"
+    try:
+        dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        day = dt.day  # no leading zero
+        month = dt.strftime("%B")  # full month name
+        time = dt.strftime("%H:%M")
+        return f"{month} {day} {time}"
+    except (ValueError, OSError, OverflowError):
+        return "-"
+
+
 # ---- column spec --------------------------------------------------------- #
 # (header, visual_width, align)
 
@@ -154,6 +171,10 @@ def format_matches_table(
             _color_adr(adr),
             elo_str,
         ]))
+
+        # sub-line: date/time when the match was played
+        date_str = _format_datetime(m.get("finished_at"))
+        lines.append(f"   ↳ {date_str}")
 
     table_body = escape("\n".join(lines))
 

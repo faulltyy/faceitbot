@@ -344,6 +344,7 @@ def _fallback_match(match_item: dict[str, Any], player_id: str) -> dict[str, Any
         "win": _determine_win(match_item, player_id),
         "elo_diff": None,
         "current_elo": None,
+        "finished_at": match_item.get("finished_at"),
     }
 
 
@@ -417,6 +418,9 @@ async def _enrich_single_match(
 
     # Include match_id for ELO tracking in the service layer
     parsed["match_id"] = match_id
+
+    # Timestamp when the match finished (Unix epoch seconds)
+    parsed["finished_at"] = match_item.get("finished_at")
 
     # ELO fields are filled later by the service layer
     parsed["elo_diff"] = None
