@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     from app.api.faceit import FaceitClient
+    from app.api.faceit_analyser import FaceitAnalyserClient
 
     # --- PostgreSQL ---
     pg_pool = await create_pool()
@@ -49,6 +50,11 @@ async def main() -> None:
     await faceit_client.open()
     logger.info("FACEIT API client ready")
 
+    # --- FaceitAnalyser API client ---
+    fa_client = FaceitAnalyserClient()
+    await fa_client.open()
+    logger.info("FaceitAnalyser API client ready")
+
     # --- Telegram bot ---
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
@@ -58,6 +64,7 @@ async def main() -> None:
 
     # Shared resources — handlers receive them as kwargs
     dp["faceit_client"] = faceit_client
+    dp["fa_client"] = fa_client
     dp["redis"] = redis
     dp["analytics"] = analytics
 
@@ -74,6 +81,7 @@ async def main() -> None:
         await dp.start_polling(bot)
     finally:
         await faceit_client.close()
+        await fa_client.close()
         await redis.aclose()
         await close_pool(pg_pool)
         await bot.session.close()

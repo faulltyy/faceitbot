@@ -186,3 +186,257 @@ def format_matches_table(
         html = html[:4090] + "</pre>"
 
     return html
+
+
+# ---- FaceitAnalyser formatters ------------------------------------------- #
+
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    """Safely convert to float."""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    """Safely convert to int."""
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def format_overview(nickname: str, data: dict[str, Any]) -> str:
+    """Format lifetime stats from FaceitAnalyser /api/stats/<id>."""
+
+    m = _safe_int(data.get("m"))
+    w = _safe_int(data.get("w"))
+    l = _safe_int(data.get("l"))
+    k = _safe_int(data.get("k"))
+    d = _safe_int(data.get("d"))
+    a = _safe_int(data.get("a"))
+    hs = _safe_int(data.get("hs"))
+    wr = _safe_float(data.get("wr"))
+    kdr = _safe_float(data.get("kdr"))
+    avg_kdr = _safe_float(data.get("avg_kdr"))
+    avg_krr = _safe_float(data.get("avg_krr"))
+    hsp = _safe_float(data.get("hsp"))
+    current_elo = _safe_int(data.get("current_elo"))
+    highest_elo = _safe_int(data.get("highest_elo"))
+    lowest_elo = _safe_int(data.get("lowest_elo"))
+    avg_elo = _safe_int(data.get("avg_elo"))
+    avg_k = _safe_float(data.get("avg_k"))
+    avg_d = _safe_float(data.get("avg_d"))
+    diff = _safe_int(data.get("diff"))
+
+    lines = [
+        f"📊 <b>Lifetime Overview for {escape(nickname)}</b>\n",
+        f"🎮 Matches: <b>{m:,}</b>  |  🏆 Wins: <b>{w:,}</b>  |  ❌ Losses: <b>{l:,}</b>",
+        f"📈 Win Rate: <b>{wr:.1f}%</b>\n",
+        f"🎯 Total K/A/D: <b>{k:,}</b> / <b>{a:,}</b> / <b>{d:,}</b>",
+        f"⚔️ Overall K/D: <b>{kdr:.2f}</b>  |  Avg K/D: <b>{avg_kdr:.2f}</b>",
+        f"💀 Avg K/R: <b>{avg_krr:.2f}</b>",
+        f"🔫 Avg Kills/Match: <b>{avg_k:.1f}</b>  |  Avg Deaths: <b>{avg_d:.1f}</b>",
+        f"💥 K-D Diff (total): <b>{'+' if diff >= 0 else ''}{diff:,}</b>",
+        f"🎯 Headshots: <b>{hs:,}</b>  |  HS%: <b>{hsp:.1f}%</b>\n",
+        f"🏅 ELO: <b>{current_elo}</b>",
+        f"   📈 Highest: <b>{highest_elo}</b>  |  📉 Lowest: <b>{lowest_elo}</b>  |  📊 Avg: <b>{avg_elo}</b>",
+    ]
+
+    return "\n".join(lines)
+
+
+# ---- map stats table ----------------------------------------------------- #
+
+_MAP_COLS = [
+    ("Map",    8, "<"),
+    ("M",      4, ">"),   # matches
+    ("WR%",    5, ">"),
+    ("K/D",    5, ">"),
+    ("K/R",    5, ">"),
+    ("HS%",    5, ">"),
+    ("AvgK",   5, ">"),
+]
+
+
+def _map_row(values: list[str]) -> str:
+    """Build one row for the map-stats table."""
+    parts: list[str] = []
+    for (_, w, align), val in zip(_MAP_COLS, values):
+        parts.append(_vpad(val, w, align))
+    return " ".join(parts)
+
+
+def format_map_stats_table(nickname: str, segments: list[dict[str, Any]]) -> str:
+    """Format per-map stats from FaceitAnalyser /api/maps/<id>."""
+
+    if not segments:
+        return f"No map stats found for {escape(nickname)}."
+
+    # Sort by number of matches descending
+    segments.sort(key=lambda s: _safe_int(s.get("m")), reverse=True)
+
+    header_line = f"🗺️ <b>Map Stats for {escape(nickname)}</b>\n\n"
+
+    hdr = _map_row([h for h, _, _ in _MAP_COLS])
+    sep = "-" * _visual_width(hdr)
+    lines: list[str] = [hdr, sep]
+
+    for seg in segments:
+        map_name = str(seg.get("segment_value", "-"))
+        # Strip de_ prefix and capitalize
+        if map_name.lower().startswith("de_"):
+            map_name = map_name[3:].capitalize()
+        else:
+            map_name = map_name.capitalize() if map_name != "-" else "-"
+
+        m = _safe_int(seg.get("m"))
+        wr = _safe_float(seg.get("wr"))
+        kdr = _safe_float(seg.get("avg_kdr"))
+        krr = _safe_float(seg.get("avg_krr"))
+        hsp = _safe_float(seg.get("hsp"))
+        avg_k = _safe_float(seg.get("avg_k"))
+
+        if m == 0:
+            continue
+
+        lines.append(_map_row([
+            _trunc(map_name, 8),
+            str(m),
+            f"{wr:.0f}",
+            f"{kdr:.2f}",
+            f"{krr:.2f}",
+            f"{hsp:.0f}",
+            f"{avg_k:.1f}",
+        ]))
+
+    table_body = escape("\n".join(lines))
+    html = f"{header_line}<pre>{table_body}</pre>"
+
+    if len(html) > 4096:
+        html = html[:4090] + "</pre>"
+
+    return html
+
+
+# ---- highlights ---------------------------------------------------------- #
+
+def format_highlights(nickname: str, data: dict[str, Any]) -> str:
+    """Format highlights/lowlights from FaceitAnalyser /api/highlights/<id>."""
+
+    lines = [f"🏆 <b>Highlights for {escape(nickname)}</b>\n"]
+
+    # Metrics to display (excluding hltv per user request)
+    metrics = [
+        ("kills", "🎯 Kills"),
+        ("assists", "🤝 Assists"),
+        ("deaths", "💀 Deaths"),
+        ("kdr", "⚔️ K/D Ratio"),
+        ("krr", "💥 K/R Ratio"),
+        ("headshotpercent", "🔫 HS%"),
+        ("diff", "📊 K-D Diff"),
+    ]
+
+    for key, label in metrics:
+        high_data = data.get(key)
+        if not high_data:
+            continue
+
+        # Each metric can have "highest" and "lowest" entries
+        highest = high_data.get("highest") or high_data.get("best")
+        lowest = high_data.get("lowest") or high_data.get("worst")
+
+        parts = []
+        if highest is not None:
+            if isinstance(highest, dict):
+                val = highest.get("value", highest.get("v", "?"))
+                map_name = highest.get("map", highest.get("i1", ""))
+                date = highest.get("date", "")
+                detail = f"<b>{val}</b>"
+                if map_name:
+                    detail += f" ({map_name})"
+                if date:
+                    detail += f" [{date}]"
+                parts.append(f"  📈 Best: {detail}")
+            else:
+                parts.append(f"  📈 Best: <b>{highest}</b>")
+
+        if lowest is not None:
+            if isinstance(lowest, dict):
+                val = lowest.get("value", lowest.get("v", "?"))
+                map_name = lowest.get("map", lowest.get("i1", ""))
+                date = lowest.get("date", "")
+                detail = f"<b>{val}</b>"
+                if map_name:
+                    detail += f" ({map_name})"
+                if date:
+                    detail += f" [{date}]"
+                parts.append(f"  📉 Worst: {detail}")
+            else:
+                parts.append(f"  📉 Worst: <b>{lowest}</b>")
+
+        if parts:
+            lines.append(f"\n{label}:")
+            lines.extend(parts)
+
+    html = "\n".join(lines)
+
+    if len(html) > 4096:
+        html = html[:4090] + "…"
+
+    return html
+
+
+# ---- insights (win vs loss) --------------------------------------------- #
+
+def format_insights(
+    nickname: str,
+    segment: str,
+    segments: list[dict[str, Any]],
+) -> str:
+    """Format win/loss comparison from FaceitAnalyser /api/insights/<id>/<seg>."""
+
+    if not segments:
+        return f"No insights data found for {escape(nickname)}."
+
+    lines = [f"🔍 <b>Insights for {escape(nickname)}</b> — <i>{escape(segment)}</i>\n"]
+
+    # Group by segment_value
+    for seg in segments:
+        seg_val = str(seg.get("segment_value", "—"))
+        m = _safe_int(seg.get("m"))
+        w = _safe_int(seg.get("w"))
+        l = _safe_int(seg.get("l"))
+        wr = _safe_float(seg.get("wr"))
+        kdr = _safe_float(seg.get("avg_kdr"))
+        krr = _safe_float(seg.get("avg_krr"))
+        hsp = _safe_float(seg.get("hsp"))
+        avg_k = _safe_float(seg.get("avg_k"))
+        avg_d = _safe_float(seg.get("avg_d"))
+
+        if m == 0:
+            continue
+
+        # Determine emoji based on segment value interpretation
+        if seg_val in ("1", "True", "true"):
+            label = "🟢 When Winning"
+        elif seg_val in ("0", "False", "false"):
+            label = "🔴 When Losing"
+        else:
+            label = f"📌 {seg_val}"
+
+        lines.append(f"\n<b>{label}</b> ({m} matches)")
+        lines.append(f"  WR: {wr:.0f}%  |  K/D: {kdr:.2f}  |  K/R: {krr:.2f}")
+        lines.append(f"  HS%: {hsp:.0f}%  |  Avg K: {avg_k:.1f}  |  Avg D: {avg_d:.1f}")
+
+    html = "\n".join(lines)
+
+    if len(html) > 4096:
+        html = html[:4090] + "…"
+
+    return html
+

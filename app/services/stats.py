@@ -20,13 +20,24 @@ from app.api.faceit import (
     NoMatchesFound,
     enrich_match_data,
 )
+from app.api.faceit_analyser import FaceitAnalyserClient, FAPlayerNotFound
 from app.config import (
     API_CONCURRENCY,
     DEFAULT_ELO_DIFF,
+    FA_HIGHLIGHTS_CACHE_TTL,
+    FA_INSIGHTS_CACHE_TTL,
+    FA_MAPS_CACHE_TTL,
+    FA_STATS_CACHE_TTL,
     MATCH_CACHE_TTL,
     SUMMARY_CACHE_TTL,
 )
-from app.services.formatter import format_matches_table
+from app.services.formatter import (
+    format_highlights,
+    format_insights,
+    format_map_stats_table,
+    format_matches_table,
+    format_overview,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +54,22 @@ def _matches_summary_key(nickname: str) -> str:
 
 def _match_key(match_id: str, player_id: str) -> str:
     return f"match:{match_id}:{player_id}"
+
+
+def _fa_overview_key(nickname: str) -> str:
+    return f"fa:overview:{nickname.lower()}"
+
+
+def _fa_maps_key(nickname: str) -> str:
+    return f"fa:maps:{nickname.lower()}"
+
+
+def _fa_highlights_key(nickname: str) -> str:
+    return f"fa:highlights:{nickname.lower()}"
+
+
+def _fa_insights_key(nickname: str, segment: str) -> str:
+    return f"fa:insights:{nickname.lower()}:{segment.lower()}"
 
 
 # ---- shared per-match fetch with cache ---------------------------------- #
@@ -315,3 +342,140 @@ async def get_player_matches_table(
     except Exception:
         pass  # read-only Redis
     return message
+
+
+# ---- FaceitAnalyser-powered commands ------------------------------------- #
+
+async def get_player_overview(
+    nickname: str,
+    faceit_client: FaceitClient,
+    fa_client: FaceitAnalyserClient,
+    redis: aioredis.Redis,
+) -> str:
+    """Return formatted lifetime overview from FaceitAnalyser."""
+
+    # Cache check
+    cache_key = _fa_overview_key(nickname)
+    try:
+        cached = await redis.get(cache_key)
+    except Exception:
+        cached = None
+    if cached:
+        logger.info("FA overview cache HIT for %s", nickname)
+        return cached.decode()
+
+    # Resolve player_id via FACEIT
+    player_info = await faceit_client.get_player_info(nickname)
+    player_id: str = player_info["player_id"]
+    display_name: str = player_info["nickname"]
+
+    # Fetch from FA
+    data = await fa_client.get_player_stats(player_id)
+
+    # Format
+    message = format_overview(display_name, data)
+
+    # Cache
+    try:
+        await redis.set(cache_key, message.encode(), ex=FA_STATS_CACHE_TTL)
+    except Exception:
+        pass
+    return message
+
+
+async def get_player_map_stats(
+    nickname: str,
+    faceit_client: FaceitClient,
+    fa_client: FaceitAnalyserClient,
+    redis: aioredis.Redis,
+) -> str:
+    """Return formatted per-map stats table from FaceitAnalyser."""
+
+    cache_key = _fa_maps_key(nickname)
+    try:
+        cached = await redis.get(cache_key)
+    except Exception:
+        cached = None
+    if cached:
+        logger.info("FA maps cache HIT for %s", nickname)
+        return cached.decode()
+
+    player_info = await faceit_client.get_player_info(nickname)
+    player_id: str = player_info["player_id"]
+    display_name: str = player_info["nickname"]
+
+    segments = await fa_client.get_player_maps(player_id)
+
+    message = format_map_stats_table(display_name, segments)
+
+    try:
+        await redis.set(cache_key, message.encode(), ex=FA_MAPS_CACHE_TTL)
+    except Exception:
+        pass
+    return message
+
+
+async def get_player_highlights(
+    nickname: str,
+    faceit_client: FaceitClient,
+    fa_client: FaceitAnalyserClient,
+    redis: aioredis.Redis,
+) -> str:
+    """Return formatted highlights from FaceitAnalyser."""
+
+    cache_key = _fa_highlights_key(nickname)
+    try:
+        cached = await redis.get(cache_key)
+    except Exception:
+        cached = None
+    if cached:
+        logger.info("FA highlights cache HIT for %s", nickname)
+        return cached.decode()
+
+    player_info = await faceit_client.get_player_info(nickname)
+    player_id: str = player_info["player_id"]
+    display_name: str = player_info["nickname"]
+
+    data = await fa_client.get_player_highlights(player_id)
+
+    message = format_highlights(display_name, data)
+
+    try:
+        await redis.set(cache_key, message.encode(), ex=FA_HIGHLIGHTS_CACHE_TTL)
+    except Exception:
+        pass
+    return message
+
+
+async def get_player_insights(
+    nickname: str,
+    segment: str,
+    faceit_client: FaceitClient,
+    fa_client: FaceitAnalyserClient,
+    redis: aioredis.Redis,
+) -> str:
+    """Return formatted win/loss insights from FaceitAnalyser."""
+
+    cache_key = _fa_insights_key(nickname, segment)
+    try:
+        cached = await redis.get(cache_key)
+    except Exception:
+        cached = None
+    if cached:
+        logger.info("FA insights cache HIT for %s/%s", nickname, segment)
+        return cached.decode()
+
+    player_info = await faceit_client.get_player_info(nickname)
+    player_id: str = player_info["player_id"]
+    display_name: str = player_info["nickname"]
+
+    segments_data = await fa_client.get_player_insights(player_id, segment)
+
+    message = format_insights(display_name, segment, segments_data)
+
+    try:
+        await redis.set(cache_key, message.encode(), ex=FA_INSIGHTS_CACHE_TTL)
+    except Exception:
+        pass
+    return message
+

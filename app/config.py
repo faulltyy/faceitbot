@@ -13,6 +13,10 @@ TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 FACEIT_API_KEY: str = os.getenv("FACEIT_API_KEY", "")
 FACEIT_BASE_URL: str = "https://open.faceit.com/data/v4"
 
+# FaceitAnalyser
+FACEIT_ANALYSER_API_KEY: str = os.getenv("FACEIT_ANALYSER_API_KEY", "")
+FACEIT_ANALYSER_BASE_URL: str = "https://faceitanalyser.com"
+
 # PostgreSQL
 DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/faceitbot")
 
@@ -23,6 +27,12 @@ REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
 MATCH_CACHE_TTL: int = 7 * 86_400   # 7 days — match stats never change
 SUMMARY_CACHE_TTL: int = 900         # 15 minutes — anti-spam for same nickname
 METRICS_CACHE_TTL: int = 60          # 60 seconds — admin metrics cache
+
+# FaceitAnalyser cache TTLs
+FA_STATS_CACHE_TTL: int = 900        # 15 minutes — global player stats
+FA_MAPS_CACHE_TTL: int = 1800        # 30 minutes — map breakdown
+FA_HIGHLIGHTS_CACHE_TTL: int = 3600  # 1 hour — highlights rarely change
+FA_INSIGHTS_CACHE_TTL: int = 1800    # 30 minutes — win/loss insights
 
 # Limits
 MAX_MATCHES: int = 30
