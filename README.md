@@ -1,16 +1,70 @@
 # FACEIT CS2 Stats Bot
 
-A Telegram bot that fetches a player's CS2 statistics using the FACEIT Data API v4. Fully Dockerized with Redis caching and rate-limit protection.
+A Telegram bot that fetches CS2 statistics using the FACEIT Data API v4 and the FaceitAnalyser API. Fully Dockerized with PostgreSQL, Redis caching, and rate-limit protection.
 
 ## Features
 
+### Core Commands
 - `/stats <nickname>` — average stats for the last 20 CS2 matches
-- `/matches <nickname>` — per-match stats for the last 10 matches (one line per match)
+- `/matches <nickname> [count]` — per-match table (1–30 matches, default 20)
 - `/start` / `/help` — welcome message with usage examples
-- **Bot Menu** — commands auto-register on startup so Telegram shows native autocomplete
-- **Smart caching** — individual match stats cached for 7 days, formatted responses cached for 15 min
-- **Rate-limit safe** — exponential backoff on 429 + concurrency semaphore (max 3 parallel requests)
-- **Edge-case handling** — player not found, fewer matches than requested, no CS2 data
+
+### FaceitAnalyser Commands
+- `/overview <nickname>` — lifetime stats overview (K/D, ELO history, win rate, headshots)
+- `/mapstats <nickname>` — per-map performance breakdown table
+- `/highlights <nickname>` — best & worst match records across all metrics
+- `/insights <nickname> [segment]` — stats breakdown by segment (default: `all`)
+
+### Admin Commands
+- `/admin` — admin panel (authorized only)
+- `/astats` — bot analytics dashboard (admin only)
+
+### Bot Features
+- **Bot Menu** — commands auto-register so Telegram shows native autocomplete
+- **Smart caching** — match data cached 7 days, summaries 15 min, FA data 1–24 hours
+- **Rate-limit safe** — exponential backoff on 429 + concurrency semaphore
+- **Edge-case handling** — player not found, no matches, API errors with clean messages
+
+## Insights Segments
+
+The `/insights` command accepts an optional segment to break down stats by:
+
+| Segment | Description |
+|---|---|
+| `all` | Overall stats (default) |
+| `map` | Per-map breakdown |
+| `weekday` | Per day of the week |
+| `hour` | Per hour of the day |
+| `premade` | Solo vs premade party |
+| `hub` | Per hub/league |
+| `region` | Per region |
+| `bestof` | Best-of-1 vs Best-of-3 |
+| `win` | When winning vs losing |
+| `gamemode` | Per game mode |
+| `kills` | By kill count brackets |
+| `deaths` | By death count brackets |
+| `kdr` | By K/D ratio brackets |
+| `krr` | By K/R ratio brackets |
+| `assists` | By assist count brackets |
+| `headshots` | By headshot count brackets |
+| `headshotpercent` | By HS% brackets |
+| `diff` | By K-D diff brackets |
+| `rounds` | By round count |
+| `aces` | By ace count |
+| `quadras` | By 4K count |
+| `triples` | By 3K count |
+| `pentas` | By 5K count |
+| `mvps` | By MVP count |
+| `delta` | By ELO change |
+| `finalscore` | By final score |
+| `firsthalfscore` | By first half score |
+| `secondhalfscore` | By second half score |
+| `overtimerounds` | By overtime rounds |
+| `team` | By team |
+| `date` | By date |
+| `nickname` | By nickname |
+
+**Example:** `/insights faullty map`
 
 ## Quick Start
 
@@ -18,9 +72,10 @@ A Telegram bot that fetches a player's CS2 statistics using the FACEIT Data API 
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in your real tokens:
-#   TELEGRAM_BOT_TOKEN  — from @BotFather
-#   FACEIT_API_KEY       — from https://developers.faceit.com/
+# Edit .env and fill in your tokens:
+#   TELEGRAM_BOT_TOKEN       — from @BotFather
+#   FACEIT_API_KEY            — from https://developers.faceit.com/
+#   FACEIT_ANALYSER_API_KEY   — from https://faceitanalyser.com/
 ```
 
 ### 2. Run with Docker Compose
@@ -30,6 +85,7 @@ docker compose up --build -d
 ```
 
 This starts:
+- **postgres** — `postgres:16-alpine` on port 5432
 - **redis** — `redis:alpine` on port 6379
 - **bot** — the Python bot container
 
@@ -37,39 +93,23 @@ This starts:
 
 Open Telegram, find your bot, and type `/` to see the command menu.
 
-#### `/stats s1mple`
-
-```
-📊 CS2 Stats for s1mple
-🎯 Avg Kills: XX.XX
-⚔️ Avg K/D: XX.XX
-💀 Avg K/R: XX.XX
-💥 Avg ADR: XX.XX
-🏆 Winrate for last 20 matches: XX%
-```
-
-#### `/matches s1mple`
-
-```
-🎮 Last 10 Matches for s1mple:
-1. [W] 🎯 K: XX | ⚔️ K/D: X.XX | 💀 K/R: X.XX | 💥 ADR: XX.XX
-2. [L] 🎯 K: XX | ⚔️ K/D: X.XX | 💀 K/R: X.XX | 💥 ADR: XX.XX
-...
-```
-
 ## Project Structure
 
 ```
 faceitbot/
 ├── app/
-│   ├── config.py            # Environment-based configuration
+│   ├── config.py                # Environment-based configuration
 │   ├── api/
-│   │   └── faceit.py        # Async FACEIT API client w/ retry
+│   │   ├── faceit.py            # Async FACEIT Data API v4 client
+│   │   └── faceit_analyser.py   # Async FaceitAnalyser API client
 │   ├── services/
-│   │   └── stats.py         # Stats aggregation + Redis caching
-│   └── bot/
-│       └── handlers.py      # /start, /help, /stats, /matches handlers
-├── main.py                  # Entry point
+│   │   ├── stats.py             # Stats aggregation + Redis caching
+│   │   └── formatter.py         # Telegram <pre> table formatters
+│   ├── bot/
+│   │   └── handlers.py          # All command handlers
+│   └── middleware/
+│       └── analytics.py         # Auto-tracking middleware
+├── main.py                      # Entry point
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
@@ -82,8 +122,8 @@ faceitbot/
 ```bash
 pip install -r requirements.txt
 
-# Make sure Redis is running on localhost:6379
-# Update REDIS_URL in .env to redis://localhost:6379/0
+# Make sure Redis and PostgreSQL are running locally
+# Update REDIS_URL and DATABASE_URL in .env
 
 python main.py
 ```
