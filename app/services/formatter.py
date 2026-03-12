@@ -7,9 +7,12 @@ pre-parsed match dicts and returns an HTML string ready for
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from html import escape
 from typing import Any
+
+_DE_PREFIX = re.compile(r"^de_", re.IGNORECASE)
 
 
 # ---- visual-width helpers ------------------------------------------------ #
@@ -211,17 +214,21 @@ def _safe_int(val: Any, default: int = 0) -> int:
 
 
 def format_overview(nickname: str, data: dict[str, Any]) -> str:
-    """Format lifetime stats from FaceitAnalyser /api/stats/<id>."""
+    """Format lifetime stats from FaceitAnalyser /api/stats/<id>.
+
+    NOTE: The API returns ``kdr`` / ``krr`` as *cumulative sums* (not ratios).
+    Use ``avg_kdr`` / ``avg_krr`` for per-match averages, and compute the
+    true overall ratio as ``k / d``.
+    """
 
     m = _safe_int(data.get("m"))
     w = _safe_int(data.get("w"))
-    l = _safe_int(data.get("l"))
+    l_val = _safe_int(data.get("l"))
     k = _safe_int(data.get("k"))
     d = _safe_int(data.get("d"))
     a = _safe_int(data.get("a"))
     hs = _safe_int(data.get("hs"))
     wr = _safe_float(data.get("wr"))
-    kdr = _safe_float(data.get("kdr"))
     avg_kdr = _safe_float(data.get("avg_kdr"))
     avg_krr = _safe_float(data.get("avg_krr"))
     hsp = _safe_float(data.get("hsp"))
@@ -233,12 +240,15 @@ def format_overview(nickname: str, data: dict[str, Any]) -> str:
     avg_d = _safe_float(data.get("avg_d"))
     diff = _safe_int(data.get("diff"))
 
+    # True overall K/D ratio
+    overall_kd = k / d if d > 0 else 0.0
+
     lines = [
         f"📊 <b>Lifetime Overview for {escape(nickname)}</b>\n",
-        f"🎮 Matches: <b>{m:,}</b>  |  🏆 Wins: <b>{w:,}</b>  |  ❌ Losses: <b>{l:,}</b>",
+        f"🎮 Matches: <b>{m:,}</b>  |  🏆 Wins: <b>{w:,}</b>  |  ❌ Losses: <b>{l_val:,}</b>",
         f"📈 Win Rate: <b>{wr:.1f}%</b>\n",
         f"🎯 Total K/A/D: <b>{k:,}</b> / <b>{a:,}</b> / <b>{d:,}</b>",
-        f"⚔️ Overall K/D: <b>{kdr:.2f}</b>  |  Avg K/D: <b>{avg_kdr:.2f}</b>",
+        f"⚔️ Overall K/D: <b>{overall_kd:.2f}</b>  |  Avg K/D: <b>{avg_kdr:.2f}</b>",
         f"💀 Avg K/R: <b>{avg_krr:.2f}</b>",
         f"🔫 Avg Kills/Match: <b>{avg_k:.1f}</b>  |  Avg Deaths: <b>{avg_d:.1f}</b>",
         f"💥 K-D Diff (total): <b>{'+' if diff >= 0 else ''}{diff:,}</b>",
@@ -325,10 +335,42 @@ def format_map_stats_table(nickname: str, segments: list[dict[str, Any]]) -> str
 
 # ---- highlights ---------------------------------------------------------- #
 
-def format_highlights(nickname: str, data: dict[str, Any]) -> str:
-    """Format highlights/lowlights from FaceitAnalyser /api/highlights/<id>."""
+def _normalize_map(raw: str | None) -> str:
+    """``de_mirage`` → ``Mirage``."""
+    if not raw:
+        return ""
+    return _DE_PREFIX.sub("", raw.strip()).capitalize()
 
-    lines = [f"🏆 <b>Highlights for {escape(nickname)}</b>\n"]
+
+def _format_highlight_match(match: dict[str, Any], target: str) -> str:
+    """Format a single highlight/lowlight match entry."""
+    # The 'target' field tells us which field holds the record value
+    # Common targets: i6=kills, i7=assists, i8=deaths, c3=kdr, c2=krr, c4=hsp
+    val = match.get(target, match.get("k", "?"))
+    map_raw = match.get("map", match.get("i1", ""))
+    map_name = _normalize_map(map_raw)
+    date = match.get("date", "")
+
+    detail = f"<b>{val}</b>"
+    if map_name:
+        detail += f" ({map_name})"
+    if date:
+        detail += f" [{date}]"
+    return detail
+
+
+def format_highlights(nickname: str, data: dict[str, Any]) -> str:
+    """Format highlights/lowlights from FaceitAnalyser /api/highlights/<id>.
+
+    Actual API structure:
+    {"highlights": {"kills": {"matches": [...], "target": "i6", ...}},
+     "lowlights": {"kills": {"matches": [...], ...}}}
+    """
+
+    lines = [f"🏆 <b>Highlights &amp; Lowlights for {escape(nickname)}</b>"]
+
+    highlights = data.get("highlights", {})
+    lowlights = data.get("lowlights", {})
 
     # Metrics to display (excluding hltv per user request)
     metrics = [
@@ -342,42 +384,25 @@ def format_highlights(nickname: str, data: dict[str, Any]) -> str:
     ]
 
     for key, label in metrics:
-        high_data = data.get(key)
-        if not high_data:
-            continue
-
-        # Each metric can have "highest" and "lowest" entries
-        highest = high_data.get("highest") or high_data.get("best")
-        lowest = high_data.get("lowest") or high_data.get("worst")
-
         parts = []
-        if highest is not None:
-            if isinstance(highest, dict):
-                val = highest.get("value", highest.get("v", "?"))
-                map_name = highest.get("map", highest.get("i1", ""))
-                date = highest.get("date", "")
-                detail = f"<b>{val}</b>"
-                if map_name:
-                    detail += f" ({map_name})"
-                if date:
-                    detail += f" [{date}]"
-                parts.append(f"  📈 Best: {detail}")
-            else:
-                parts.append(f"  📈 Best: <b>{highest}</b>")
 
-        if lowest is not None:
-            if isinstance(lowest, dict):
-                val = lowest.get("value", lowest.get("v", "?"))
-                map_name = lowest.get("map", lowest.get("i1", ""))
-                date = lowest.get("date", "")
-                detail = f"<b>{val}</b>"
-                if map_name:
-                    detail += f" ({map_name})"
-                if date:
-                    detail += f" [{date}]"
+        # Best (highlights)
+        hi = highlights.get(key, {})
+        if isinstance(hi, dict):
+            matches = hi.get("matches", [])
+            target = hi.get("target", "k")
+            if matches:
+                detail = _format_highlight_match(matches[0], target)
+                parts.append(f"  📈 Best: {detail}")
+
+        # Worst (lowlights)
+        lo = lowlights.get(key, {})
+        if isinstance(lo, dict):
+            matches = lo.get("matches", [])
+            target = lo.get("target", "k")
+            if matches:
+                detail = _format_highlight_match(matches[0], target)
                 parts.append(f"  📉 Worst: {detail}")
-            else:
-                parts.append(f"  📉 Worst: <b>{lowest}</b>")
 
         if parts:
             lines.append(f"\n{label}:")
@@ -393,6 +418,23 @@ def format_highlights(nickname: str, data: dict[str, Any]) -> str:
 
 # ---- insights (win vs loss) --------------------------------------------- #
 
+def _pretty_segment_value(seg_val: str, segment: str) -> str:
+    """Convert raw segment_value to a user-friendly label."""
+    # Win/loss indicators
+    if seg_val in ("1", "True", "true"):
+        return "🟢 When Winning"
+    if seg_val in ("0", "False", "false"):
+        return "🔴 When Losing"
+    # UUID (used by 'all' segment) — show as "Overall"
+    if len(seg_val) > 30 and "-" in seg_val:
+        return "📊 Overall"
+    # Map names
+    if seg_val.startswith("de_"):
+        return f"🗺️ {_normalize_map(seg_val)}"
+    # Weekday, hour, etc.
+    return f"📌 {seg_val}"
+
+
 def format_insights(
     nickname: str,
     segment: str,
@@ -403,14 +445,14 @@ def format_insights(
     if not segments:
         return f"No insights data found for {escape(nickname)}."
 
-    lines = [f"🔍 <b>Insights for {escape(nickname)}</b> — <i>{escape(segment)}</i>\n"]
+    # Sort by matches descending
+    segments.sort(key=lambda s: _safe_int(s.get("m")), reverse=True)
 
-    # Group by segment_value
+    lines = [f"🔍 <b>Insights for {escape(nickname)}</b> — <i>{escape(segment)}</i>"]
+
     for seg in segments:
         seg_val = str(seg.get("segment_value", "—"))
         m = _safe_int(seg.get("m"))
-        w = _safe_int(seg.get("w"))
-        l = _safe_int(seg.get("l"))
         wr = _safe_float(seg.get("wr"))
         kdr = _safe_float(seg.get("avg_kdr"))
         krr = _safe_float(seg.get("avg_krr"))
@@ -421,15 +463,9 @@ def format_insights(
         if m == 0:
             continue
 
-        # Determine emoji based on segment value interpretation
-        if seg_val in ("1", "True", "true"):
-            label = "🟢 When Winning"
-        elif seg_val in ("0", "False", "false"):
-            label = "🔴 When Losing"
-        else:
-            label = f"📌 {seg_val}"
+        label = _pretty_segment_value(seg_val, segment)
 
-        lines.append(f"\n<b>{label}</b> ({m} matches)")
+        lines.append(f"\n<b>{escape(label)}</b> ({m} matches)")
         lines.append(f"  WR: {wr:.0f}%  |  K/D: {kdr:.2f}  |  K/R: {krr:.2f}")
         lines.append(f"  HS%: {hsp:.0f}%  |  Avg K: {avg_k:.1f}  |  Avg D: {avg_d:.1f}")
 

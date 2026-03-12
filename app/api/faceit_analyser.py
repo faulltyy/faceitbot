@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import aiohttp
@@ -88,9 +89,13 @@ class FaceitAnalyserClient:
                     await asyncio.sleep(delay)
                     continue
 
+                # Unexpected status
                 text = await resp.text()
+                # Strip HTML tags for cleaner error messages
+                clean = re.sub(r"<[^>]+>", "", text).strip()
+                clean = re.sub(r"\s+", " ", clean)[:200]
                 raise FaceitAnalyserError(
-                    f"FaceitAnalyser API returned {resp.status}: {text[:300]}"
+                    f"FaceitAnalyser returned {resp.status}: {clean or 'no details'}"
                 )
 
         raise FaceitAnalyserError("Max retries exceeded (429)")
